@@ -102,6 +102,19 @@ const ChannelImpl = struct {
         return if (is_closed) error.ChannelClosed else error.ChannelEmpty;
     }
 
+    /// Peeks at the front item without removing it.
+    fn peek(self: *Self, elem_ptr: [*]u8) !void {
+        self.mutex.lockUncancelable();
+        if (self.count > 0) {
+            @memcpy(elem_ptr[0..self.elem_size], self.elemPtr(self.head)[0..self.elem_size]);
+            self.mutex.unlock();
+            return;
+        }
+        const is_closed = self.closed;
+        self.mutex.unlock();
+        return if (is_closed) error.ChannelClosed else error.ChannelEmpty;
+    }
+
     fn takeItemAndWakeSender(self: *Self, elem_ptr: [*]u8) void {
         std.debug.assert(self.count > 0);
 
@@ -442,6 +455,18 @@ pub fn Channel(comptime T: type) type {
         pub fn tryReceive(self: *Self) !T {
             var result: T = undefined;
             try self.impl.tryReceive(std.mem.asBytes(&result).ptr);
+            return result;
+        }
+
+        /// Peeks at the front value without removing it.
+        ///
+        /// Returns the value at the head of the channel without consuming it.
+        ///
+        /// Returns `error.ChannelEmpty` if the channel is empty.
+        /// Returns `error.ChannelClosed` if the channel is closed and empty.
+        pub fn peek(self: *Self) !T {
+            var result: T = undefined;
+            try self.impl.peek(std.mem.asBytes(&result).ptr);
             return result;
         }
 
