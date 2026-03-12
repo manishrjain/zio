@@ -212,7 +212,15 @@ pub fn getNextExecutor(rt: *Runtime) error{RuntimeShutdown}!*Executor {
     }
 
     const index = rt.next_executor_index.fetchAdd(1, .monotonic);
-    return rt.executors.items[index % rt.executors.items.len];
+    const num_workers = rt.workers.items.len;
+    if (num_workers > 0) {
+        // Skip main_executor (index 0) — it is only driven when the creating
+        // thread actively enters the runtime (e.g. via yield points). When the
+        // runtime is used as a background service, main_executor is orphaned
+        // and tasks assigned to it would never run.
+        return rt.executors.items[1 + (index % num_workers)];
+    }
+    return rt.executors.items[0];
 }
 
 // Executor - per-thread execution unit for running coroutines
