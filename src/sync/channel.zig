@@ -394,6 +394,7 @@ const AsyncReceiveImpl = struct {
 pub fn Channel(comptime T: type) type {
     return struct {
         impl: ChannelImpl,
+        allocator: ?std.mem.Allocator = null,
 
         const Self = @This();
 
@@ -408,6 +409,30 @@ pub fn Channel(comptime T: type) type {
                     .capacity = buffer.len,
                 },
             };
+        }
+
+        /// Initializes a channel with a heap-allocated buffer of the given capacity.
+        /// Call deinit() to free the buffer.
+        pub fn initAlloc(allocator: std.mem.Allocator, capacity: usize) !Self {
+            const buffer = try allocator.alloc(T, capacity);
+            return .{
+                .impl = .{
+                    .buffer = std.mem.sliceAsBytes(buffer).ptr,
+                    .elem_size = @sizeOf(T),
+                    .capacity = capacity,
+                },
+                .allocator = allocator,
+            };
+        }
+
+        /// Frees the buffer if it was heap-allocated via initAlloc.
+        /// No-op for channels created with init().
+        pub fn deinit(self: *Self) void {
+            if (self.allocator) |alloc| {
+                const ptr: [*]align(@alignOf(T)) u8 = @alignCast(self.impl.buffer);
+                alloc.free(@as([*]T, @ptrCast(ptr))[0..self.impl.capacity]);
+                self.allocator = null;
+            }
         }
 
         /// Checks if the channel is empty.
