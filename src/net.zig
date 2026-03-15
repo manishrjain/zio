@@ -1072,7 +1072,7 @@ pub const Stream = struct {
         var offset: usize = 0;
         while (offset < buf.len) {
             const n = try self.read(buf[offset..], timeout);
-            if (n == 0) break;
+            if (n == 0) return error.EndOfStream;
             offset += n;
         }
     }
