@@ -27,6 +27,7 @@ const common = @import("common.zig");
 pub const Cancelable = common.Cancelable;
 pub const Timeoutable = common.Timeoutable;
 pub const blockInPlace = common.blockInPlace;
+pub const waitForIo = common.waitForIo;
 
 pub const time = @import("time.zig"); // TODO: make non-pub
 pub const Duration = time.Duration;
