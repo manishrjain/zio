@@ -1202,14 +1202,19 @@ test "Pipe: timeout on blocked read" {
     const rt = try Runtime.init(std.testing.allocator, .{});
     defer rt.deinit();
 
-    const pipe = try createPipe();
-    defer pipe.close();
+    var handle = try rt.spawn(struct {
+        fn run() !void {
+            const pipe = try createPipe();
+            defer pipe.close();
 
-    var buffer: [100]u8 = undefined;
-    const timeout = Timeout.fromMilliseconds(10);
+            var buffer: [100]u8 = undefined;
+            const timeout = Timeout.fromMilliseconds(10);
 
-    const result = pipe.read.read(&buffer, timeout);
-    try std.testing.expectError(error.Timeout, result);
+            const result = pipe.read.read(&buffer, timeout);
+            try std.testing.expectError(error.Timeout, result);
+        }
+    }.run, .{});
+    try handle.join();
 }
 
 test "Pipe: poll for readability" {
@@ -1218,25 +1223,26 @@ test "Pipe: poll for readability" {
     const rt = try Runtime.init(std.testing.allocator, .{});
     defer rt.deinit();
 
-    const pipe = try createPipe();
-    defer pipe.close();
+    var handle = try rt.spawn(struct {
+        fn run() !void {
+            const pipe = try createPipe();
+            defer pipe.close();
 
-    // Poll should timeout when no data available
-    const timeout = Timeout.fromMilliseconds(10);
-    const poll_result = pipe.read.poll(.read, timeout);
-    try std.testing.expectError(error.Timeout, poll_result);
+            const timeout = Timeout.fromMilliseconds(10);
+            const poll_result = pipe.read.poll(.read, timeout);
+            try std.testing.expectError(error.Timeout, poll_result);
 
-    // Write some data
-    const write_data = "poll test";
-    _ = try pipe.write.write(write_data, .none);
+            const write_data = "poll test";
+            _ = try pipe.write.write(write_data, .none);
 
-    // Now poll should succeed immediately
-    try pipe.read.poll(.read, .none);
+            try pipe.read.poll(.read, .none);
 
-    // And we should be able to read the data
-    var buffer: [100]u8 = undefined;
-    const bytes_read = try pipe.read.read(&buffer, .none);
-    try std.testing.expectEqualStrings(write_data, buffer[0..bytes_read]);
+            var buffer: [100]u8 = undefined;
+            const bytes_read = try pipe.read.read(&buffer, .none);
+            try std.testing.expectEqualStrings(write_data, buffer[0..bytes_read]);
+        }
+    }.run, .{});
+    try handle.join();
 }
 
 test "Pipe: poll on closed write end" {
@@ -1245,19 +1251,21 @@ test "Pipe: poll on closed write end" {
     const rt = try Runtime.init(std.testing.allocator, .{});
     defer rt.deinit();
 
-    const pipe = try createPipe();
-    defer pipe.read.close();
+    var handle = try rt.spawn(struct {
+        fn run() !void {
+            const pipe = try createPipe();
+            defer pipe.read.close();
 
-    // Close write end
-    pipe.write.close();
+            pipe.write.close();
 
-    // Poll should succeed immediately (EOF condition)
-    try pipe.read.poll(.read, .none);
+            try pipe.read.poll(.read, .none);
 
-    // Read should return 0 (EOF)
-    var buffer: [100]u8 = undefined;
-    const bytes_read = try pipe.read.read(&buffer, .none);
-    try std.testing.expectEqual(0, bytes_read);
+            var buffer: [100]u8 = undefined;
+            const bytes_read = try pipe.read.read(&buffer, .none);
+            try std.testing.expectEqual(0, bytes_read);
+        }
+    }.run, .{});
+    try handle.join();
 }
 
 test "Pipe: poll on closed read end" {
@@ -1266,19 +1274,21 @@ test "Pipe: poll on closed read end" {
     const rt = try Runtime.init(std.testing.allocator, .{});
     defer rt.deinit();
 
-    const pipe = try createPipe();
-    defer pipe.write.close();
+    var handle = try rt.spawn(struct {
+        fn run() !void {
+            const pipe = try createPipe();
+            defer pipe.write.close();
 
-    // Close read end
-    pipe.read.close();
+            pipe.read.close();
 
-    // Poll for writability succeeds (pipe appears writable)
-    try pipe.write.poll(.write, .none);
+            try pipe.write.poll(.write, .none);
 
-    // But actual write fails with BrokenPipe
-    const write_data = "test";
-    const result = pipe.write.write(write_data, .none);
-    try std.testing.expectError(error.BrokenPipe, result);
+            const write_data = "test";
+            const result = pipe.write.write(write_data, .none);
+            try std.testing.expectError(error.BrokenPipe, result);
+        }
+    }.run, .{});
+    try handle.join();
 }
 
 test "Pipe: half-close write end" {
@@ -1287,23 +1297,25 @@ test "Pipe: half-close write end" {
     const rt = try Runtime.init(std.testing.allocator, .{});
     defer rt.deinit();
 
-    const pipe = try createPipe();
-    defer pipe.read.close();
+    var handle = try rt.spawn(struct {
+        fn run() !void {
+            const pipe = try createPipe();
+            defer pipe.read.close();
 
-    const write_data = "Data before close";
-    _ = try pipe.write.write(write_data, .none);
+            const write_data = "Data before close";
+            _ = try pipe.write.write(write_data, .none);
 
-    // Close write end
-    pipe.write.close();
+            pipe.write.close();
 
-    // Should be able to read existing data
-    var buffer: [100]u8 = undefined;
-    const bytes_read = try pipe.read.read(&buffer, .none);
-    try std.testing.expectEqualStrings(write_data, buffer[0..bytes_read]);
+            var buffer: [100]u8 = undefined;
+            const bytes_read = try pipe.read.read(&buffer, .none);
+            try std.testing.expectEqualStrings(write_data, buffer[0..bytes_read]);
 
-    // Next read should return 0 (EOF)
-    const eof_read = try pipe.read.read(&buffer, .none);
-    try std.testing.expectEqual(0, eof_read);
+            const eof_read = try pipe.read.read(&buffer, .none);
+            try std.testing.expectEqual(0, eof_read);
+        }
+    }.run, .{});
+    try handle.join();
 }
 
 test "Pipe: half-close read end" {
@@ -1312,16 +1324,19 @@ test "Pipe: half-close read end" {
     const rt = try Runtime.init(std.testing.allocator, .{});
     defer rt.deinit();
 
-    const pipe = try createPipe();
-    defer pipe.write.close();
+    var handle = try rt.spawn(struct {
+        fn run() !void {
+            const pipe = try createPipe();
+            defer pipe.write.close();
 
-    // Close read end first
-    pipe.read.close();
+            pipe.read.close();
 
-    // Try to write - should get BrokenPipe error
-    const write_data = "Data after close";
-    const result = pipe.write.write(write_data, .none);
-    try std.testing.expectError(error.BrokenPipe, result);
+            const write_data = "Data after close";
+            const result = pipe.write.write(write_data, .none);
+            try std.testing.expectError(error.BrokenPipe, result);
+        }
+    }.run, .{});
+    try handle.join();
 }
 
 test "File: blocking mode without runtime" {

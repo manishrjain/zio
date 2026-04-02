@@ -49,7 +49,7 @@ pub fn main() !void {
     std.log.info("Press Ctrl+C to stop the server", .{});
 
     // --8<-- [start:group]
-    var group: zio.Group = .init;
+    var group = zio.group();
     defer group.cancel();
     // --8<-- [end:group]
 

@@ -507,7 +507,7 @@ test "BroadcastChannel: basic send and receive" {
     var consumer = BroadcastChannel(u32).Consumer{};
     var results: [3]u32 = undefined;
 
-    var group: Group = .init;
+    var group = runtime.group();
     defer group.cancel();
 
     try group.spawn(TestFn.sender, .{ &channel, &barrier });
@@ -555,7 +555,7 @@ test "BroadcastChannel: multiple consumers receive same messages" {
     var sum2: u32 = 0;
     var sum3: u32 = 0;
 
-    var group: Group = .init;
+    var group = runtime.group();
     defer group.cancel();
 
     try group.spawn(TestFn.sender, .{ &channel, &barrier });
@@ -781,7 +781,7 @@ test "BroadcastChannel: consumers can drain after close" {
     var consumer = BroadcastChannel(u32).Consumer{};
     var results: [4]?u32 = .{ null, null, null, null };
 
-    var group: Group = .init;
+    var group = runtime.group();
     defer group.cancel();
 
     try group.spawn(TestFn.sender, .{ &channel, &barrier });
@@ -830,7 +830,7 @@ test "BroadcastChannel: waiting consumers wake on close" {
     var consumer = BroadcastChannel(u32).Consumer{};
     var got_closed = false;
 
-    var group: Group = .init;
+    var group = runtime.group();
     defer group.cancel();
 
     try group.spawn(TestFn.waiter, .{ &channel, &consumer, &got_closed, &barrier });
@@ -899,7 +899,7 @@ test "BroadcastChannel: asyncReceive with select - basic" {
 
     var consumer = BroadcastChannel(u32).Consumer{};
 
-    var group: Group = .init;
+    var group = runtime.group();
     defer group.cancel();
 
     try group.spawn(TestFn.sender, .{ &channel, &barrier });
@@ -1049,7 +1049,7 @@ test "BroadcastChannel: select with multiple broadcast channels" {
     var consumer2 = BroadcastChannel(u32).Consumer{};
     var which: u8 = 0;
 
-    var group: Group = .init;
+    var group = runtime.group();
     defer group.cancel();
 
     try group.spawn(TestFn.selectTask, .{ &channel1, &channel2, &consumer1, &consumer2, &which, &subscribed });

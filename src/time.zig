@@ -755,7 +755,6 @@ test "Stopwatch: start, read, lap, reset" {
 
 test "Timeout future: timeout wins select" {
     const Channel = @import("sync/channel.zig").Channel;
-    const Group = @import("group.zig").Group;
     const select = @import("select.zig").select;
 
     const runtime = try Runtime.init(std.testing.allocator, .{});
@@ -776,7 +775,7 @@ test "Timeout future: timeout wins select" {
         }
     };
 
-    var group: Group = .init;
+    var group = runtime.group();
     defer group.cancel();
     try group.spawn(TestFn.run, .{&channel});
     try group.wait();

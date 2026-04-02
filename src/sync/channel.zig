@@ -2,8 +2,9 @@
 // SPDX-License-Identifier: MIT
 
 const std = @import("std");
-const Runtime = @import("../runtime.zig").Runtime;
-const yield = @import("../runtime.zig").yield;
+const runtime_mod = @import("../runtime.zig");
+const Runtime = runtime_mod.Runtime;
+const yield = runtime_mod.yield;
 const Group = @import("../group.zig").Group;
 const SimpleQueue = @import("../utils/simple_queue.zig").SimpleQueue;
 const WaitNode = @import("../utils/wait_queue.zig").WaitNode;
@@ -692,7 +693,7 @@ test "Channel: basic send and receive" {
 
     var results: [3]u32 = undefined;
 
-    var group: Group = .init;
+    var group = runtime.group();
     defer group.cancel();
 
     try group.spawn(TestFn.producer, .{&channel});
@@ -764,7 +765,7 @@ test "Channel: blocking behavior when empty" {
 
     var result: u32 = 0;
 
-    var group: Group = .init;
+    var group = runtime.group();
     defer group.cancel();
 
     try group.spawn(TestFn.consumer, .{ &channel, &result });
@@ -800,7 +801,7 @@ test "Channel: blocking behavior when full" {
 
     var count: u32 = 0;
 
-    var group: Group = .init;
+    var group = runtime.group();
     defer group.cancel();
 
     try group.spawn(TestFn.producer, .{ &channel, &count });
@@ -836,7 +837,7 @@ test "Channel: multiple producers and consumers" {
 
     var sum: u32 = 0;
 
-    var group: Group = .init;
+    var group = runtime.group();
     defer group.cancel();
 
     try group.spawn(TestFn.producer, .{ &channel, 0 });
@@ -875,7 +876,7 @@ test "Channel: close graceful" {
 
     var results: [3]?u32 = .{ null, null, null };
 
-    var group: Group = .init;
+    var group = runtime.group();
     defer group.cancel();
 
     try group.spawn(TestFn.producer, .{&channel});
@@ -912,7 +913,7 @@ test "Channel: close immediate" {
 
     var result: ?u32 = null;
 
-    var group: Group = .init;
+    var group = runtime.group();
     defer group.cancel();
 
     try group.spawn(TestFn.producer, .{&channel});
@@ -1010,7 +1011,7 @@ test "Channel: asyncReceive with select - basic" {
         }
     };
 
-    var group: Group = .init;
+    var group = runtime.group();
     defer group.cancel();
 
     try group.spawn(TestFn.sender, .{&channel});
@@ -1043,7 +1044,7 @@ test "Channel: asyncReceive with select - value types" {
         }
     };
 
-    var group: Group = .init;
+    var group = runtime.group();
     defer group.cancel();
 
     try group.spawn(TestFn.sender, .{&channel});
@@ -1131,7 +1132,7 @@ test "Channel: asyncSend with select - basic" {
         }
     };
 
-    var group: Group = .init;
+    var group = runtime.group();
     defer group.cancel();
 
     try group.spawn(TestFn.sender, .{&channel});
@@ -1212,7 +1213,7 @@ test "Channel: select on both send and receive" {
             try ch2.send(2);
 
             var which: u8 = 0;
-            var group: Group = .init;
+            var group = runtime_mod.group();
             defer group.cancel();
 
             try group.spawn(selectTask, .{ ch1, ch2, &which });
@@ -1287,7 +1288,7 @@ test "Channel: select with multiple receivers" {
 
     var which: u8 = 0;
 
-    var group: Group = .init;
+    var group = runtime.group();
     defer group.cancel();
 
     try group.spawn(TestFn.selectTask, .{ &channel1, &channel2, &which });
@@ -1323,7 +1324,7 @@ test "Channel: unbuffered - basic synchronous transfer" {
 
     var results: [2]u32 = undefined;
 
-    var group: Group = .init;
+    var group = runtime.group();
     defer group.cancel();
 
     try group.spawn(TestFn.sender, .{&channel});
@@ -1381,7 +1382,7 @@ test "Channel: unbuffered - sender blocks until receiver ready" {
     var order: [2]u8 = undefined;
     var idx: u8 = 0;
 
-    var group: Group = .init;
+    var group = runtime.group();
     defer group.cancel();
 
     try group.spawn(TestFn.sender, .{ &channel, &order, &idx });
@@ -1423,7 +1424,7 @@ test "Channel: unbuffered - receiver blocks until sender ready" {
     var order: [2]u8 = undefined;
     var idx: u8 = 0;
 
-    var group: Group = .init;
+    var group = runtime.group();
     defer group.cancel();
 
     try group.spawn(TestFn.receiver, .{ &channel, &order, &idx });
@@ -1455,7 +1456,7 @@ test "Channel: unbuffered - multiple senders and receivers" {
 
     var sum: u32 = 0;
 
-    var group: Group = .init;
+    var group = runtime.group();
     defer group.cancel();
 
     // Spawn senders and receivers - they will pair up
@@ -1496,7 +1497,7 @@ test "Channel: unbuffered - close wakes blocked sender" {
 
     var got_closed: bool = false;
 
-    var group: Group = .init;
+    var group = runtime.group();
     defer group.cancel();
 
     try group.spawn(TestFn.sender, .{ &channel, &got_closed });
@@ -1531,7 +1532,7 @@ test "Channel: unbuffered - close wakes blocked receiver" {
 
     var got_error: bool = false;
 
-    var group: Group = .init;
+    var group = runtime.group();
     defer group.cancel();
 
     try group.spawn(TestFn.receiver, .{ &channel, &got_error });
@@ -1566,7 +1567,7 @@ test "Channel: unbuffered - select with direct transfer" {
         }
     };
 
-    var group: Group = .init;
+    var group = runtime.group();
     defer group.cancel();
 
     try group.spawn(TestFn.sender, .{&channel});

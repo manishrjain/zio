@@ -159,7 +159,7 @@ test "Mutex basic lock/unlock" {
         }
     };
 
-    var group: Group = .init;
+    var group = runtime.group();
     defer group.cancel();
 
     try group.spawn(TestFn.worker, .{ &shared_counter, &mutex });
@@ -201,7 +201,7 @@ test "Mutex contention" {
         }
     };
 
-    var group: Group = .init;
+    var group = runtime.group();
     defer group.cancel();
 
     for (0..4) |_| {

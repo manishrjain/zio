@@ -388,7 +388,7 @@ test "Signal: basic signal handling" {
         signal_received: bool = false,
 
         fn mainTask(self: *@This(), r: *Runtime) !void {
-            var group: Group = .init;
+            var group = r.group();
             defer group.cancel();
 
             try group.spawn(waitForSignal, .{ self, r });
@@ -429,7 +429,7 @@ test "Signal: multiple handlers for same signal" {
         count: std.atomic.Value(usize) = .init(0),
 
         fn mainTask(self: *@This(), r: *Runtime) !void {
-            var group: Group = .init;
+            var group = r.group();
             defer group.cancel();
 
             try group.spawn(waitForSignal, .{ self, r });
@@ -503,7 +503,7 @@ test "Signal: timedWait receives signal before timeout" {
         signal_received: bool = false,
 
         fn mainTask(self: *@This(), r: *Runtime) !void {
-            var group: Group = .init;
+            var group = r.group();
             defer group.cancel();
 
             try group.spawn(waitForSignalTimed, .{ self, r });
@@ -546,7 +546,7 @@ test "Signal: select on multiple signals" {
         signal_received: std.atomic.Value(u8) = .init(0),
 
         fn mainTask(self: *@This(), r: *Runtime) !void {
-            var group: Group = .init;
+            var group = r.group();
             defer group.cancel();
 
             try group.spawn(waitForSignals, .{ self, r });

@@ -72,7 +72,7 @@ pub fn main() !void {
     std.log.info("Visit http://{f} in your browser", .{server.socket.address});
     std.log.info("Press Ctrl+C to stop the server", .{});
 
-    var group: zio.Group = .init;
+    var group = zio.group();
     defer group.cancel();
 
     while (true) {

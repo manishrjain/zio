@@ -29,7 +29,7 @@ fn serverTask(ready: *zio.ResetEvent, done: *zio.ResetEvent) !void {
 
     ready.set();
 
-    var group: zio.Group = .init;
+    var group = zio.group();
     defer group.cancel();
 
     var clients_handled: usize = 0;
@@ -101,7 +101,7 @@ pub fn main() !void {
 
     var timer = zio.time.Stopwatch.start();
 
-    var client_group: zio.Group = .init;
+    var client_group = zio.group();
     defer client_group.cancel();
 
     for (0..NUM_CLIENTS) |_| {

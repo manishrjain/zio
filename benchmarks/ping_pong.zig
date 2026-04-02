@@ -41,7 +41,7 @@ pub fn main() !void {
     var timer = zio.time.Stopwatch.start();
 
     // Spawn pinger and ponger tasks
-    var group: zio.Group = .init;
+    var group = zio.group();
     defer group.cancel();
 
     try group.spawn(pinger, .{ &ping_channel, &pong_channel, NUM_ROUNDS });

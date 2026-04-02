@@ -228,7 +228,7 @@ test "Notify basic signal/wait" {
         }
     };
 
-    var group: Group = .init;
+    var group = runtime.group();
     defer group.cancel();
 
     try group.spawn(TestFn.waiter, .{ &notify, &waiter_finished, &waiter_ready });
@@ -277,7 +277,7 @@ test "Notify broadcast to multiple waiters" {
         }
     };
 
-    var group: Group = .init;
+    var group = runtime.group();
     defer group.cancel();
 
     try group.spawn(TestFn.waiter, .{ &notify, &waiter_count, &waiters_ready });
@@ -317,7 +317,7 @@ test "Notify multiple signals to multiple waiters" {
         }
     };
 
-    var group: Group = .init;
+    var group = runtime.group();
     defer group.cancel();
 
     try group.spawn(TestFn.waiter, .{ &notify, &waiter_count, &waiters_ready });
@@ -381,7 +381,7 @@ test "Notify timedWait success" {
         }
     };
 
-    var group: Group = .init;
+    var group = runtime.group();
     defer group.cancel();
 
     try group.spawn(TestFn.waiter, .{ &notify, &wait_succeeded, &waiter_ready });

@@ -178,7 +178,7 @@ test "Semaphore: basic wait/post" {
 
     var n: i32 = 0;
 
-    var group: Group = .init;
+    var group = runtime.group();
     defer group.cancel();
 
     try group.spawn(TestFn.worker, .{ &sem, &n });
@@ -238,7 +238,7 @@ test "Semaphore: timedWait success" {
         }
     };
 
-    var group: Group = .init;
+    var group = runtime.group();
     defer group.cancel();
 
     try group.spawn(TestFn.waiter, .{ &sem, &got_permit, &waiter_ready });
@@ -264,7 +264,7 @@ test "Semaphore: multiple permits" {
         }
     };
 
-    var group: Group = .init;
+    var group = runtime.group();
     defer group.cancel();
 
     try group.spawn(TestFn.worker, .{&sem});

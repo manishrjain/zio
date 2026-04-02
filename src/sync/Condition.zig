@@ -273,7 +273,7 @@ test "Condition basic wait/signal" {
         }
     };
 
-    var group: Group = .init;
+    var group = runtime.group();
     defer group.cancel();
 
     try group.spawn(TestFn.waiter, .{ &mutex, &condition, &ready, &waiter_ready });
@@ -349,7 +349,7 @@ test "Condition broadcast" {
         }
     };
 
-    var group: Group = .init;
+    var group = runtime.group();
     defer group.cancel();
 
     try group.spawn(TestFn.waiter, .{ &mutex, &condition, &ready, &waiter_count, &waiters_ready });

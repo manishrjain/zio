@@ -148,7 +148,7 @@ test "Barrier: basic synchronization" {
         }
     };
 
-    var group: Group = .init;
+    var group = runtime.group();
     defer group.cancel();
 
     for (&results) |*result| {
@@ -180,7 +180,7 @@ test "Barrier: leader detection" {
         }
     };
 
-    var group: Group = .init;
+    var group = runtime.group();
     defer group.cancel();
 
     try group.spawn(TestFn.worker, .{ &barrier, &leader_count });
@@ -219,7 +219,7 @@ test "Barrier: reusable for multiple cycles" {
         }
     };
 
-    var group: Group = .init;
+    var group = runtime.group();
     defer group.cancel();
 
     try group.spawn(TestFn.worker, .{ &barrier, &phase1_done, &phase2_done, &phase3_done });
@@ -275,7 +275,7 @@ test "Barrier: ordering test" {
         }
     };
 
-    var group: Group = .init;
+    var group = runtime.group();
     defer group.cancel();
 
     for (&arrivals) |*my_arrival| {
@@ -313,7 +313,7 @@ test "Barrier: many coroutines" {
         }
     };
 
-    var group: Group = .init;
+    var group = runtime.group();
     defer group.cancel();
 
     for (&final_counts) |*result| {

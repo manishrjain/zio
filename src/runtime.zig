@@ -35,7 +35,7 @@ const Waiter = @import("common.zig").Waiter;
 
 const mod = @This();
 
-/// Number of executor threads to run (including main).
+/// Number of executor threads to run.
 pub const ExecutorCount = enum(u6) {
     /// Auto-detect based on CPU count
     auto = 0,
@@ -63,7 +63,7 @@ pub const RuntimeOptions = struct {
         .max_unused_stacks = 16,
         .max_age = .fromSeconds(60),
     },
-    /// Number of executor threads to run (including main).
+    /// Number of executor threads to run.
     executors: ExecutorCount = .exact(1),
 };
 
@@ -212,15 +212,8 @@ pub fn getNextExecutor(rt: *Runtime) error{RuntimeShutdown}!*Executor {
     }
 
     const index = rt.next_executor_index.fetchAdd(1, .monotonic);
-    const num_workers = rt.workers.items.len;
-    if (num_workers > 0) {
-        // Skip main_executor (index 0) — it is only driven when the creating
-        // thread actively enters the runtime (e.g. via yield points). When the
-        // runtime is used as a background service, main_executor is orphaned
-        // and tasks assigned to it would never run.
-        return rt.executors.items[1 + (index % num_workers)];
-    }
-    return rt.executors.items[0];
+    const num_executors = rt.executors.items.len;
+    return rt.executors.items[index % num_executors];
 }
 
 // Executor - per-thread execution unit for running coroutines
@@ -614,6 +607,12 @@ pub fn spawnBlocking(func: anytype, args: std.meta.ArgsTuple(@TypeOf(func))) !Jo
     return rt.spawnBlocking(func, args);
 }
 
+/// Create a task group bound to the current runtime.
+/// Panics if called outside of a task context.
+pub fn group() Group {
+    return getCurrentExecutor().runtime.group();
+}
+
 /// Begin a cancellation shield to prevent being canceled during critical sections.
 /// If not in a task context, this is a no-op.
 pub fn beginShield() void {
@@ -658,7 +657,6 @@ pub const Runtime = struct {
     options: RuntimeOptions,
 
     executors: std.ArrayList(*Executor) = .empty,
-    main_executor: Executor,
     next_executor_index: std.atomic.Value(usize) = .init(0),
     workers: std.ArrayList(Worker) = .empty,
     task_count: std.atomic.Value(u32) = std.atomic.Value(u32).init(0), // Active task counter
@@ -681,7 +679,6 @@ pub const Runtime = struct {
             .allocator = allocator,
             .options = options,
             .thread_pool = undefined,
-            .main_executor = undefined,
             .stack_pool = .init(options.stack_pool),
             .task_pool = .init(allocator),
         };
@@ -692,25 +689,20 @@ pub const Runtime = struct {
         try self.executors.ensureTotalCapacity(allocator, num_executors);
         errdefer self.executors.deinit(allocator);
 
-        try self.main_executor.init(self, 0);
-        errdefer self.main_executor.deinit();
-        self.executors.appendAssumeCapacity(&self.main_executor);
-
-        const num_workers = num_executors - 1;
-        try self.workers.ensureTotalCapacity(allocator, num_workers);
+        try self.workers.ensureTotalCapacity(allocator, num_executors);
 
         errdefer self.shutdownWorkers();
 
-        for (0..num_workers) |i| {
-            log.debug("Spawning worker thread {}", .{i + 1});
+        for (0..num_executors) |i| {
+            log.debug("Spawning worker thread {}", .{i});
             const worker = self.workers.addOneAssumeCapacity();
             errdefer _ = self.workers.pop();
             worker.* = .{};
-            worker.thread = try std.Thread.spawn(.{}, runWorker, .{ self, worker, @as(u6, @intCast(i + 1)) });
+            worker.thread = try std.Thread.spawn(.{}, runWorker, .{ self, worker, @as(u6, @intCast(i)) });
         }
 
         for (self.workers.items, 0..) |*worker, i| {
-            log.debug("Waiting for worker thread {}", .{i + 1});
+            log.debug("Waiting for worker thread {}", .{i});
             worker.ready.wait();
             if (worker.err) |e| {
                 return e;
@@ -755,9 +747,6 @@ pub const Runtime = struct {
         std.debug.assert(self.task_count.load(.acquire) == 0);
 
         // Worker executors clean themselves up via defer in runWorker.
-        // We only need to deinit the main executor here.
-        self.main_executor.deinit();
-
         self.executors.deinit(allocator);
 
         // Clean up ThreadPool after executors
@@ -774,6 +763,12 @@ pub const Runtime = struct {
     }
 
     // High-level public API
+
+    /// Create a task group bound to this runtime.
+    pub fn group(self: *Runtime) Group {
+        return .{ .runtime = self };
+    }
+
     pub fn spawn(self: *Runtime, func: anytype, args: std.meta.ArgsTuple(@TypeOf(func))) !JoinHandle(meta.ReturnType(func)) {
         const Result = meta.ReturnType(func);
         const Args = @TypeOf(args);
@@ -1048,66 +1043,44 @@ test "runtime: shielded sleep is not cancelable" {
     try std.testing.expect(timer.read().toMilliseconds() >= 40);
 }
 
-test "runtime: yield from main allows tasks to run" {
+test "runtime: task with yield completes via join" {
     const runtime = try Runtime.init(std.testing.allocator, .{});
     defer runtime.deinit();
 
-    var counter: usize = 0;
-
     const yieldingTask = struct {
-        fn call(counter_ptr: *usize) !void {
+        fn call() !u32 {
+            var counter: u32 = 0;
             for (0..10) |_| {
-                counter_ptr.* += 1;
+                counter += 1;
                 try yield();
             }
+            return counter;
         }
     }.call;
 
-    var handle = try runtime.spawn(yieldingTask, .{&counter});
-    defer handle.cancel();
-
-    // Instead of join(), use yield() from main to let the task run
-    var iterations: usize = 0;
-    while (counter < 10) : (iterations += 1) {
-        if (iterations >= 100) {
-            std.debug.print("yield from main not working: counter={}, iterations={}\n", .{ counter, iterations });
-            return error.TestExpectedEqual;
-        }
-        try yield();
-    }
-
-    try std.testing.expectEqual(10, counter);
+    var handle = try runtime.spawn(yieldingTask, .{});
+    const result = handle.join();
+    try std.testing.expectEqual(10, try result);
 }
 
-test "runtime: sleep from main allows tasks to run" {
-    const runtime = try Runtime.init(std.testing.allocator, .{});
-    defer runtime.deinit();
+test "runtime: multiple runtimes from same thread" {
+    const rt1 = try Runtime.init(std.testing.allocator, .{ .executors = .exact(1) });
+    defer rt1.deinit();
 
-    var counter: usize = 0;
+    const rt2 = try Runtime.init(std.testing.allocator, .{ .executors = .exact(1) });
+    defer rt2.deinit();
 
-    const yieldingTask = struct {
-        fn call(counter_ptr: *usize) !void {
-            for (0..10) |_| {
-                counter_ptr.* += 1;
-                try yield();
-            }
+    const work = struct {
+        fn call(x: i32) i32 {
+            return x * 2;
         }
     }.call;
 
-    var handle = try runtime.spawn(yieldingTask, .{&counter});
-    defer handle.cancel();
+    var h1 = try rt1.spawn(work, .{21});
+    var h2 = try rt2.spawn(work, .{42});
 
-    // Instead of join(), use sleep() from main to let the task run
-    var iterations: usize = 0;
-    while (counter < 10) : (iterations += 1) {
-        if (iterations >= 100) {
-            std.debug.print("sleep from main not working: counter={}, iterations={}\n", .{ counter, iterations });
-            return error.TestExpectedEqual;
-        }
-        try runtime.sleep(.fromMilliseconds(1));
-    }
-
-    try std.testing.expectEqual(10, counter);
+    try std.testing.expectEqual(42, h1.join());
+    try std.testing.expectEqual(84, h2.join());
 }
 
 test "runtime: multi-threaded execution with 2 executors" {
@@ -1125,15 +1098,15 @@ test "runtime: multi-threaded execution with 2 executors" {
 
     TestContext.counter = 0;
 
-    var group: Group = .init;
-    defer group.cancel();
+    var grp = runtime.group();
+    defer grp.cancel();
 
     for (0..4) |_| {
-        try group.spawn(TestContext.task, .{runtime});
+        try grp.spawn(TestContext.task, .{runtime});
     }
 
-    try group.wait();
-    try std.testing.expect(!group.hasFailed());
+    try grp.wait();
+    try std.testing.expect(!grp.hasFailed());
 
     try std.testing.expectEqual(4, TestContext.counter);
 }
@@ -1170,19 +1143,19 @@ test "Runtime: multi-threaded with task migration" {
         }
     };
 
-    var group: Group = .init;
-    defer group.cancel();
+    var grp = runtime.group();
+    defer grp.cancel();
 
-    var ctx: TestContext = .{ .group = &group };
+    var ctx: TestContext = .{ .group = &grp };
 
     var event: ResetEvent = .{};
 
-    try group.spawn(TestContext.task, .{ &ctx, &event });
+    try grp.spawn(TestContext.task, .{ &ctx, &event });
 
     try ctx.done.wait();
 
-    try group.wait();
-    try std.testing.expect(!group.hasFailed());
+    try grp.wait();
+    try std.testing.expect(!grp.hasFailed());
 
     try std.testing.expectEqual(100, ctx.counter.load(.acquire));
 }

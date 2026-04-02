@@ -11,6 +11,7 @@ pub const JoinHandle = runtime.JoinHandle;
 // Standalone task functions
 pub const spawn = runtime.spawn;
 pub const spawnBlocking = runtime.spawnBlocking;
+pub const group = runtime.group;
 pub const yield = runtime.yield;
 pub const sleep = runtime.sleep;
 pub const now = runtime.now;

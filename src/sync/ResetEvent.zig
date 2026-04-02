@@ -258,7 +258,7 @@ test "ResetEvent wait/set signaling" {
         }
     };
 
-    var group: Group = .init;
+    var group = runtime.group();
     defer group.cancel();
 
     try group.spawn(TestFn.waiter, .{ &reset_event, &waiter_finished, &waiter_ready });
@@ -306,7 +306,7 @@ test "ResetEvent multiple waiters broadcast" {
         }
     };
 
-    var group: Group = .init;
+    var group = runtime.group();
     defer group.cancel();
 
     try group.spawn(TestFn.waiter, .{ &reset_event, &waiter_count, &waiters_ready });

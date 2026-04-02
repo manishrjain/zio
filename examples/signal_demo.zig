@@ -53,7 +53,7 @@ pub fn main() !void {
 
     std.log.info("Starting demo (press Ctrl+C to stop gracefully)...", .{});
 
-    var group: zio.Group = .init;
+    var group = zio.group();
     defer group.cancel();
 
     // Spawn server task

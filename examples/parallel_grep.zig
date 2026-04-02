@@ -126,10 +126,10 @@ pub fn main() !void {
     var results_channel = zio.Channel(SearchResult).init(&.{});
     // --8<-- [end:channels]
 
-    var workers_group: zio.Group = .init;
+    var workers_group = zio.group();
     defer workers_group.cancel();
 
-    var collector_group: zio.Group = .init;
+    var collector_group = zio.group();
     defer collector_group.cancel();
 
     // --8<-- [start:coordination]

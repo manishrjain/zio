@@ -323,26 +323,41 @@ test "waitForIo: basic timer completion" {
     var rt = try Runtime.init(std.testing.allocator, .{});
     defer rt.deinit();
 
-    var timer = ev.Timer.init(.{ .duration = .fromMilliseconds(10) });
-    try waitForIo(&timer.c);
+    var handle = try rt.spawn(struct {
+        fn run() !void {
+            var timer = ev.Timer.init(.{ .duration = .fromMilliseconds(10) });
+            try waitForIo(&timer.c);
+        }
+    }.run, .{});
+    try handle.join();
 }
 
 test "timedWaitForIo: timeout interrupts long operation" {
     var rt = try Runtime.init(std.testing.allocator, .{});
     defer rt.deinit();
 
-    // Long timer (1 second) with short timeout (10ms)
-    var timer = ev.Timer.init(.{ .duration = .fromSeconds(1) });
-    try std.testing.expectError(error.Timeout, timedWaitForIo(&timer.c, .fromMilliseconds(10)));
+    var handle = try rt.spawn(struct {
+        fn run() !void {
+            // Long timer (1 second) with short timeout (10ms)
+            var timer = ev.Timer.init(.{ .duration = .fromSeconds(1) });
+            try std.testing.expectError(error.Timeout, timedWaitForIo(&timer.c, .fromMilliseconds(10)));
+        }
+    }.run, .{});
+    try handle.join();
 }
 
 test "timedWaitForIo: completes before timeout" {
     var rt = try Runtime.init(std.testing.allocator, .{});
     defer rt.deinit();
 
-    // Short timer (10ms) with long timeout (1 second)
-    var timer = ev.Timer.init(.{ .duration = .fromMilliseconds(10) });
-    try timedWaitForIo(&timer.c, .{ .duration = .fromSeconds(1) });
+    var handle = try rt.spawn(struct {
+        fn run() !void {
+            // Short timer (10ms) with long timeout (1 second)
+            var timer = ev.Timer.init(.{ .duration = .fromMilliseconds(10) });
+            try timedWaitForIo(&timer.c, .{ .duration = .fromSeconds(1) });
+        }
+    }.run, .{});
+    try handle.join();
 }
 
 test "Waiter: futex-based timed wait with timeout" {

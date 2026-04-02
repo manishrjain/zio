@@ -36,7 +36,7 @@ pub fn main() !void {
     };
 
     // Spawn multiple tasks that increment shared counter
-    var group: zio.Group = .init;
+    var group = zio.group();
     defer group.cancel();
 
     for (0..4) |i| {

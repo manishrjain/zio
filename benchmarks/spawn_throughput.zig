@@ -24,7 +24,7 @@ pub fn main() !void {
 
     var timer = zio.time.Stopwatch.start();
 
-    var group: zio.Group = .init;
+    var group = zio.group();
     defer group.cancel();
 
     for (0..NUM_SPAWNS) |_| {

@@ -240,7 +240,7 @@ test "RwLock concurrent readers and writers" {
         }
     };
 
-    var group: Group = .init;
+    var group = runtime.group();
     defer group.cancel();
 
     try group.spawn(TestFn.writer, .{ &rwlock, &val_a, &val_b });
@@ -273,7 +273,7 @@ test "RwLock writer exclusion" {
         }
     };
 
-    var group: Group = .init;
+    var group = runtime.group();
     defer group.cancel();
 
     for (0..4) |_| {

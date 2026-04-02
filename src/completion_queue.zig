@@ -246,155 +246,192 @@ test "CompletionQueue: wait on empty queue returns null" {
     var rt = try Runtime.init(std.testing.allocator, .{});
     defer rt.deinit();
 
-    var cq = CompletionQueue.init();
-    try std.testing.expect(cq.isEmpty());
-    try std.testing.expect(!cq.hasPending());
-    try std.testing.expect(!cq.hasCompleted());
+    var handle = try rt.spawn(struct {
+        fn run() !void {
+            var cq = CompletionQueue.init();
+            try std.testing.expect(cq.isEmpty());
+            try std.testing.expect(!cq.hasPending());
+            try std.testing.expect(!cq.hasCompleted());
 
-    const result = try cq.wait();
-    try std.testing.expectEqual(null, result);
+            const result = try cq.wait();
+            try std.testing.expectEqual(null, result);
+        }
+    }.run, .{});
+    try handle.join();
 }
 
 test "CompletionQueue: single timer" {
     var rt = try Runtime.init(std.testing.allocator, .{});
     defer rt.deinit();
 
-    var cq = CompletionQueue.init();
+    var handle = try rt.spawn(struct {
+        fn run() !void {
+            var cq = CompletionQueue.init();
 
-    var timer = ev.Timer.init(.{ .duration = .fromMilliseconds(10) });
-    cq.submit(&timer.c);
+            var timer = ev.Timer.init(.{ .duration = .fromMilliseconds(10) });
+            cq.submit(&timer.c);
 
-    try std.testing.expect(!cq.isEmpty());
-    try std.testing.expect(cq.hasPending());
+            try std.testing.expect(!cq.isEmpty());
+            try std.testing.expect(cq.hasPending());
 
-    const c = try cq.wait();
-    try std.testing.expect(c != null);
-    try std.testing.expectEqual(&timer.c, c.?);
+            const c = try cq.wait();
+            try std.testing.expect(c != null);
+            try std.testing.expectEqual(&timer.c, c.?);
 
-    // Queue is now empty
-    try std.testing.expect(cq.isEmpty());
-    try std.testing.expect(!cq.hasPending());
-    try std.testing.expect(!cq.hasCompleted());
+            try std.testing.expect(cq.isEmpty());
+            try std.testing.expect(!cq.hasPending());
+            try std.testing.expect(!cq.hasCompleted());
 
-    const end = try cq.wait();
-    try std.testing.expectEqual(null, end);
+            const end = try cq.wait();
+            try std.testing.expectEqual(null, end);
+        }
+    }.run, .{});
+    try handle.join();
 }
 
 test "CompletionQueue: multiple timers" {
     var rt = try Runtime.init(std.testing.allocator, .{});
     defer rt.deinit();
 
-    var cq = CompletionQueue.init();
+    var handle = try rt.spawn(struct {
+        fn run() !void {
+            var cq = CompletionQueue.init();
 
-    var timer1 = ev.Timer.init(.{ .duration = .fromMilliseconds(10) });
-    var timer2 = ev.Timer.init(.{ .duration = .fromMilliseconds(20) });
-    var timer3 = ev.Timer.init(.{ .duration = .fromMilliseconds(30) });
-    cq.submit(&timer1.c);
-    cq.submit(&timer2.c);
-    cq.submit(&timer3.c);
+            var timer1 = ev.Timer.init(.{ .duration = .fromMilliseconds(10) });
+            var timer2 = ev.Timer.init(.{ .duration = .fromMilliseconds(20) });
+            var timer3 = ev.Timer.init(.{ .duration = .fromMilliseconds(30) });
+            cq.submit(&timer1.c);
+            cq.submit(&timer2.c);
+            cq.submit(&timer3.c);
 
-    var count: u32 = 0;
-    while (try cq.wait()) |_| {
-        count += 1;
-    }
-    try std.testing.expectEqual(3, count);
+            var count: u32 = 0;
+            while (try cq.wait()) |_| {
+                count += 1;
+            }
+            try std.testing.expectEqual(3, count);
+        }
+    }.run, .{});
+    try handle.join();
 }
 
 test "CompletionQueue: dynamic submit during iteration" {
     var rt = try Runtime.init(std.testing.allocator, .{});
     defer rt.deinit();
 
-    var cq = CompletionQueue.init();
+    var handle = try rt.spawn(struct {
+        fn run() !void {
+            var cq = CompletionQueue.init();
 
-    var timer1 = ev.Timer.init(.{ .duration = .fromMilliseconds(10) });
-    cq.submit(&timer1.c);
+            var timer1 = ev.Timer.init(.{ .duration = .fromMilliseconds(10) });
+            cq.submit(&timer1.c);
 
-    var timer2 = ev.Timer.init(.{ .duration = .fromMilliseconds(10) });
-    var submitted_second = false;
+            var timer2 = ev.Timer.init(.{ .duration = .fromMilliseconds(10) });
+            var submitted_second = false;
 
-    var count: u32 = 0;
-    while (try cq.wait()) |_| {
-        count += 1;
-        if (!submitted_second) {
-            cq.submit(&timer2.c);
-            submitted_second = true;
+            var count: u32 = 0;
+            while (try cq.wait()) |_| {
+                count += 1;
+                if (!submitted_second) {
+                    cq.submit(&timer2.c);
+                    submitted_second = true;
+                }
+            }
+            try std.testing.expectEqual(2, count);
         }
-    }
-    try std.testing.expectEqual(2, count);
+    }.run, .{});
+    try handle.join();
 }
 
 test "CompletionQueue: wait then timedWait does not false-timeout" {
     var rt = try Runtime.init(std.testing.allocator, .{});
     defer rt.deinit();
 
-    var cq = CompletionQueue.init();
+    var handle = try rt.spawn(struct {
+        fn run() !void {
+            var cq = CompletionQueue.init();
 
-    // First: submit and wait() — pops without blocking, consuming a signal
-    var timer1 = ev.Timer.init(.{ .duration = .fromMilliseconds(10) });
-    cq.submit(&timer1.c);
-    const c1 = try cq.wait();
-    try std.testing.expectEqual(&timer1.c, c1.?);
+            var timer1 = ev.Timer.init(.{ .duration = .fromMilliseconds(10) });
+            cq.submit(&timer1.c);
+            const c1 = try cq.wait();
+            try std.testing.expectEqual(&timer1.c, c1.?);
 
-    // Second: submit and timedWait() — must not return false Timeout
-    var timer2 = ev.Timer.init(.{ .duration = .fromMilliseconds(10) });
-    cq.submit(&timer2.c);
-    const c2 = try cq.timedWait(.{ .duration = .fromSeconds(1) });
-    try std.testing.expectEqual(&timer2.c, c2.?);
+            var timer2 = ev.Timer.init(.{ .duration = .fromMilliseconds(10) });
+            cq.submit(&timer2.c);
+            const c2 = try cq.timedWait(.{ .duration = .fromSeconds(1) });
+            try std.testing.expectEqual(&timer2.c, c2.?);
+        }
+    }.run, .{});
+    try handle.join();
 }
 
 test "CompletionQueue: timedWait completes before timeout" {
     var rt = try Runtime.init(std.testing.allocator, .{});
     defer rt.deinit();
 
-    var cq = CompletionQueue.init();
+    var handle = try rt.spawn(struct {
+        fn run() !void {
+            var cq = CompletionQueue.init();
 
-    var timer = ev.Timer.init(.{ .duration = .fromMilliseconds(10) });
-    cq.submit(&timer.c);
+            var timer = ev.Timer.init(.{ .duration = .fromMilliseconds(10) });
+            cq.submit(&timer.c);
 
-    const c = try cq.timedWait(.{ .duration = .fromSeconds(1) });
-    try std.testing.expect(c != null);
-    try std.testing.expectEqual(&timer.c, c.?);
+            const c = try cq.timedWait(.{ .duration = .fromSeconds(1) });
+            try std.testing.expect(c != null);
+            try std.testing.expectEqual(&timer.c, c.?);
+        }
+    }.run, .{});
+    try handle.join();
 }
 
 test "CompletionQueue: timedWait returns timeout" {
     var rt = try Runtime.init(std.testing.allocator, .{});
     defer rt.deinit();
 
-    var cq = CompletionQueue.init();
+    var handle = try rt.spawn(struct {
+        fn run() !void {
+            var cq = CompletionQueue.init();
 
-    // Long timer with short timeout
-    var timer = ev.Timer.init(.{ .duration = .fromSeconds(10) });
-    cq.submit(&timer.c);
+            var timer = ev.Timer.init(.{ .duration = .fromSeconds(10) });
+            cq.submit(&timer.c);
 
-    try std.testing.expectError(error.Timeout, cq.timedWait(.fromMilliseconds(10)));
+            try std.testing.expectError(error.Timeout, cq.timedWait(.fromMilliseconds(10)));
 
-    // Clean up
-    cq.cancel();
+            cq.cancel();
+        }
+    }.run, .{});
+    try handle.join();
 }
 
 test "CompletionQueue: timedWait on empty queue returns null" {
     var rt = try Runtime.init(std.testing.allocator, .{});
     defer rt.deinit();
 
-    var cq = CompletionQueue.init();
-    const result = try cq.timedWait(.fromMilliseconds(10));
-    try std.testing.expectEqual(null, result);
+    var handle = try rt.spawn(struct {
+        fn run() !void {
+            var cq = CompletionQueue.init();
+            const result = try cq.timedWait(.fromMilliseconds(10));
+            try std.testing.expectEqual(null, result);
+        }
+    }.run, .{});
+    try handle.join();
 }
 
 test "CompletionQueue: cancel pending operations" {
     var rt = try Runtime.init(std.testing.allocator, .{});
     defer rt.deinit();
 
-    var cq = CompletionQueue.init();
+    var handle = try rt.spawn(struct {
+        fn run() !void {
+            var cq = CompletionQueue.init();
 
-    // Submit a long timer
-    var timer = ev.Timer.init(.{ .duration = .fromSeconds(10) });
-    cq.submit(&timer.c);
+            var timer = ev.Timer.init(.{ .duration = .fromSeconds(10) });
+            cq.submit(&timer.c);
 
-    // Cancel should complete without waiting 10 seconds
-    cq.cancel();
+            cq.cancel();
 
-    // Queue should be empty after cancel
-    const result = try cq.wait();
-    try std.testing.expectEqual(null, result);
+            const result = try cq.wait();
+            try std.testing.expectEqual(null, result);
+        }
+    }.run, .{});
+    try handle.join();
 }

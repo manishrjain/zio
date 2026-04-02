@@ -1505,7 +1505,7 @@ test "tcpConnectToAddress: basic" {
     var server_port_buf: [1]u16 = undefined;
     var server_port_ch = Channel(u16).init(&server_port_buf);
 
-    var group: Group = .init;
+    var group = runtime.group();
     defer group.cancel();
 
     try group.spawn(ServerTask.run, .{&server_port_ch});
@@ -1562,7 +1562,7 @@ test "tcpConnectToHost: basic" {
     var server_port_buf: [1]u16 = undefined;
     var server_port_ch = Channel(u16).init(&server_port_buf);
 
-    var group: Group = .init;
+    var group = runtime.group();
     defer group.cancel();
 
     try group.spawn(ServerTask.run, .{&server_port_ch});
@@ -1874,7 +1874,7 @@ pub fn checkListen(addr: anytype, options: anytype, write_buffer: []u8) !void {
             const server = try addr_inner.listen(options_inner);
             defer server.close();
 
-            var group: Group = .init;
+            var group = runtime_mod.group();
             defer group.cancel();
 
             try group.spawn(serverFn, .{server});
@@ -1922,7 +1922,7 @@ pub fn checkBind(server_addr: anytype, client_addr: anytype) !void {
             const socket = try server_addr_inner.bind(.{});
             defer socket.close();
 
-            var group: Group = .init;
+            var group = runtime_mod.group();
             defer group.cancel();
 
             try group.spawn(serverFn, .{socket});
@@ -1968,7 +1968,7 @@ pub fn checkShutdown(addr: anytype, options: anytype) !void {
             const server = try addr_inner.listen(options_inner);
             defer server.close();
 
-            var group: Group = .init;
+            var group = runtime_mod.group();
             defer group.cancel();
 
             try group.spawn(serverFn, .{server});

@@ -1422,6 +1422,9 @@ test "Coroutine: stack trace" {
         coro.step();
     }
 
+    // Clear stale context left by switchContext during step()
+    Coroutine.clearCurrent();
+
     std.debug.dumpStackTrace(test_data.trace);
 
     std.testing.expect(test_data.trace.index > 1 and test_data.trace.index < 7) catch |err| {

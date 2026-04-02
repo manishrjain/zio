@@ -4,7 +4,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const Runtime = @import("runtime.zig").Runtime;
-const getCurrentTask = @import("runtime.zig").getCurrentTask;
+const getCurrentTaskOrNull = @import("runtime.zig").getCurrentTaskOrNull;
 const yield = @import("runtime.zig").yield;
 const common = @import("common.zig");
 const Cancelable = common.Cancelable;
@@ -234,9 +234,10 @@ pub fn select(futures: anytype) !SelectResult(@TypeOf(futures)) {
     const fields = @typeInfo(S).@"struct".fields;
 
     // Self-wait detection: check all futures for self-wait
-    const task = getCurrentTask();
-    inline for (fields) |field| {
-        checkSelfWait(task, @field(futures, field.name));
+    if (getCurrentTaskOrNull()) |task| {
+        inline for (fields) |field| {
+            checkSelfWait(task, @field(futures, field.name));
+        }
     }
 
     // Winner tracking: NO_WINNER means no winner yet
@@ -387,10 +388,10 @@ pub fn selectAwaitables(awaitables: []const *Awaitable) Cancelable!usize {
 
 /// Internal wait implementation with configurable cancellation behavior.
 fn waitInternal(future: anytype, comptime flags: WaitFlags) Cancelable!WaitResult(FutureResult(@TypeOf(future))) {
-    const task = getCurrentTask();
-
     // Self-wait detection: check if waiting on own task (would deadlock)
-    checkSelfWait(task, future);
+    if (getCurrentTaskOrNull()) |task| {
+        checkSelfWait(task, future);
+    }
 
     var waiter = Waiter.init();
 

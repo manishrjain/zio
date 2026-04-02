@@ -25,8 +25,7 @@ pub const IoGroup = extern struct {
 
 pub const Group = struct {
     inner: IoGroup = .{},
-
-    pub const init: Group = .{};
+    runtime: *Runtime,
 
     // Interpret inner.token as WaitQueue head
     //   null (0)  = sentinel0 = idle/done
@@ -116,7 +115,7 @@ pub const Group = struct {
     }
 
     pub fn spawn(self: *Group, func: anytype, args: std.meta.ArgsTuple(@TypeOf(func))) !void {
-        const rt = getCurrentExecutor().runtime;
+        const rt = self.runtime;
         const Args = @TypeOf(args);
         const ReturnType = @typeInfo(@TypeOf(func)).@"fn".return_type.?;
         const Context = struct { group: *Group, args: Args };
@@ -145,7 +144,7 @@ pub const Group = struct {
     }
 
     pub fn spawnBlocking(self: *Group, func: anytype, args: std.meta.ArgsTuple(@TypeOf(func))) !void {
-        const rt = getCurrentExecutor().runtime;
+        const rt = self.runtime;
         const Args = @TypeOf(args);
         const ReturnType = @typeInfo(@TypeOf(func)).@"fn".return_type.?;
         const Context = struct { group: *Group, args: Args };
@@ -299,12 +298,12 @@ test "Group: spawn" {
 
     const TestContext = struct {
         fn asyncTask() !void {
-            var group: Group = .init;
-            defer group.cancel();
+            var grp = getCurrentExecutor().runtime.group();
+            defer grp.cancel();
 
-            try group.spawn(testFn, .{0});
+            try grp.spawn(testFn, .{0});
 
-            try group.wait();
+            try grp.wait();
         }
     };
 
@@ -326,14 +325,14 @@ test "Group: wait for multiple tasks" {
         fn asyncTask() !void {
             completed = 0;
 
-            var group: Group = .init;
-            defer group.cancel();
+            var grp = getCurrentExecutor().runtime.group();
+            defer grp.cancel();
 
-            try group.spawn(task, .{});
-            try group.spawn(task, .{});
-            try group.spawn(task, .{});
+            try grp.spawn(task, .{});
+            try grp.spawn(task, .{});
+            try grp.spawn(task, .{});
 
-            try group.wait();
+            try grp.wait();
 
             try std.testing.expectEqual(3, completed);
         }
@@ -366,16 +365,16 @@ test "Group: cancellation while waiting" {
         }
 
         fn groupTask() anyerror!void {
-            var group: Group = .init;
-            defer group.cancel();
+            var grp = getCurrentExecutor().runtime.group();
+            defer grp.cancel();
 
             // Spawn multiple slow tasks
-            try group.spawn(slowTask, .{});
-            try group.spawn(slowTask, .{});
-            try group.spawn(slowTask, .{});
+            try grp.spawn(slowTask, .{});
+            try grp.spawn(slowTask, .{});
+            try grp.spawn(slowTask, .{});
 
             // This wait should be interrupted by cancellation
-            group.wait() catch {};
+            grp.wait() catch {};
         }
 
         fn asyncTask(runtime: *Runtime) !void {
@@ -420,7 +419,7 @@ test "Group: failed task does not close group" {
 
     T.counter = 0;
 
-    var group: Group = .init;
+    var group = rt.group();
     defer group.cancel();
 
     const n = 10;

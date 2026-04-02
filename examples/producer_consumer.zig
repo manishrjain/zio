@@ -52,7 +52,7 @@ pub fn main() !void {
     var channel = zio.Channel(i32).init(&buffer);
 
     // Start 2 producers and 2 consumers
-    var group: zio.Group = .init;
+    var group = zio.group();
     defer group.cancel();
 
     for (0..2) |i| {
