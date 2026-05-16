@@ -18,7 +18,16 @@ pub const unexpected_error_tracing = builtin.mode == .Debug and switch (builtin.
 };
 
 pub fn unexpectedError(err: anytype) error{Unexpected} {
-    if (unexpected_error_tracing) {
+    // Always log the unmapped errno — without it, callers see only the
+    // opaque `error.Unexpected` and cannot tell which syscall errno fell
+    // through the explicit mappings. The Debug-only stack-trace block
+    // below is still gated to avoid noise in release builds.
+    // `err` here is `anytype` because callers pass either error-set values or
+    // raw `linux.E` enum tags. `{}` works for both — `@errorName` only works
+    // for the former, so we don't use it.
+    std.log.scoped(.zio).err("unexpected errno: {}", .{err});
+    // TODO: Setting it to true for now.
+    if (true or unexpected_error_tracing) {
         std.debug.print(
             \\unexpected error: {}
             \\please file a bug report: https://github.com/lalinsky/zio/issues/new
