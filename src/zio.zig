@@ -17,6 +17,7 @@ pub const now = runtime.now;
 pub const beginShield = runtime.beginShield;
 pub const endShield = runtime.endShield;
 pub const checkCancel = runtime.checkCancel;
+pub const getCurrentTaskOrNull = runtime.getCurrentTaskOrNull;
 
 pub const AutoCancel = @import("autocancel.zig").AutoCancel;
 
@@ -28,6 +29,7 @@ pub const Cancelable = common.Cancelable;
 pub const Timeoutable = common.Timeoutable;
 pub const blockInPlace = common.blockInPlace;
 pub const waitForIo = common.waitForIo;
+pub const Waiter = common.Waiter;
 
 pub const time = @import("time.zig"); // TODO: make non-pub
 pub const Duration = time.Duration;
