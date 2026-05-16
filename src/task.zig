@@ -247,9 +247,14 @@ pub const AnyTask = struct {
         };
 
         if (self == &executor.main_task) {
-            // Main task enters the run loop instead of context switching
+            // Main task enters the run loop instead of context switching.
+            // An error here means the backend (e.g. io_uring_enter2) returned
+            // an errno that has no recovery path inside zio. Swallowing and
+            // returning would loop here forever on the next yield, drowning
+            // logs and never making progress — fail fast so the trace points
+            // at the actual culprit rather than at the loop spam.
             executor.run(.until_ready) catch |err| {
-                std.log.err("Event loop error during yield: {}", .{err});
+                std.debug.panic("Event loop error during yield: {s}", .{@errorName(err)});
             };
         } else {
             executor.switchOut(&self.coro);

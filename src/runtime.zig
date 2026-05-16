@@ -484,22 +484,23 @@ pub const Executor = struct {
             return;
         }
 
-        // Normal scheduling
+        // Normal scheduling. Tasks are pinned to their home executor for life
+        // — no cross-executor migration. Migrating would violate the io_uring
+        // ring's IORING_SETUP_SINGLE_ISSUER (kernel returns -EEXIST when a
+        // thread other than the ring's original issuer calls io_uring_enter).
+        // Re-enable migration only with work-stealing that ensures rings stay
+        // owned by their issuer thread.
+        // TODO: .new tasks still get remotely scheduled to distribute them
+        //       across executors at spawn time.
         if (getCurrentExecutorOrNull()) |current_exec| {
-            // TODO: for now, we are forcing .new tasks to be remotely scheduled
-            //       to distribute them across executors, until we have work stealing
-            //       for re-balancing them
-            if (current_exec.runtime == self.runtime and old_state != .new) {
-                if (current_exec != self) {
-                    task.coro.parent_context_ptr.store(&current_exec.main_task.coro.context, .release);
-                    task.last_run_tick = 0; // Allow immediate execution on new executor
-                }
-                current_exec.scheduleTaskLocal(task);
+            if (current_exec == self and current_exec.runtime == self.runtime and old_state != .new) {
+                self.scheduleTaskLocal(task);
                 return;
             }
         }
 
-        // No current executor or different runtime
+        // Cross-executor (or no current executor / different runtime / .new):
+        // route to the home executor's remote queue and wake its loop.
         self.scheduleTaskRemote(task);
     }
 
