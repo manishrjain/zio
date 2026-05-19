@@ -226,7 +226,7 @@ fn concurrentImpl(
     start: *const fn (context: *const anyopaque, result: *anyopaque) void,
 ) Io.ConcurrentError!*Io.AnyFuture {
     const rt: *Runtime = @ptrCast(@alignCast(userdata));
-    const task = spawnTask(rt, null, result_len, result_alignment, context, context_alignment, .{ .regular = start }, null) catch {
+    const task = spawnTask(rt, null, .normal, result_len, result_alignment, context, context_alignment, .{ .regular = start }, null) catch {
         return error.ConcurrencyUnavailable;
     };
     return @ptrCast(&task.awaitable);

@@ -7,6 +7,7 @@ const ev = @import("ev/root.zig");
 
 const Runtime = @import("runtime.zig").Runtime;
 const Executor = @import("runtime.zig").Executor;
+const Priority = @import("runtime.zig").Priority;
 const getCurrentExecutorOrNull = @import("runtime.zig").getCurrentExecutorOrNull;
 const Awaitable = @import("awaitable.zig").Awaitable;
 const Coroutine = @import("coro/coroutines.zig").Coroutine;
@@ -165,6 +166,10 @@ pub const AnyTask = struct {
     // Used to prevent running the same task more than once per event loop tick.
     // Reset to 0 when stolen, allowing immediate execution on the thief.
     last_run_tick: u32 = 0,
+
+    // Scheduling priority. Set at creation, never changes.
+    // Higher-priority tasks run before lower-priority ones on the same executor.
+    priority: Priority = .normal,
 
     // Runtime this task belongs to (set at creation, never changes)
     runtime: *Runtime,
@@ -470,6 +475,7 @@ pub const AnyTask = struct {
 
     pub fn create(
         executor: *Executor,
+        priority: Priority,
         result_len: usize,
         result_alignment: std.mem.Alignment,
         context: []const u8,
@@ -498,6 +504,7 @@ pub const AnyTask = struct {
             .coro = .{
                 .parent_context_ptr = &executor.main_task.coro.context,
             },
+            .priority = priority,
             .runtime = executor.runtime,
             .closure = alloc_result.closure,
         };
@@ -565,6 +572,7 @@ pub fn finishTask(rt: *Runtime, awaitable: *Awaitable) void {
 pub fn spawnTask(
     rt: *Runtime,
     home: ?*Executor,
+    priority: Priority,
     result_len: usize,
     result_alignment: std.mem.Alignment,
     context: []const u8,
@@ -576,6 +584,7 @@ pub fn spawnTask(
 
     const task = try AnyTask.create(
         executor,
+        priority,
         result_len,
         result_alignment,
         context,

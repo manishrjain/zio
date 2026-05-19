@@ -207,6 +207,16 @@ comptime {
     std.debug.assert(@alignOf(WaitNode) >= 4);
 }
 
+/// Scheduling priority for a task. High-priority tasks run before normal ones
+/// on the same executor (no starvation prevention — a steady stream of high
+/// tasks can defer normal tasks indefinitely).
+pub const Priority = enum(u1) {
+    normal = 0,
+    high = 1,
+
+    pub const count = 2;
+};
+
 pub fn getNextExecutor(rt: *Runtime) error{RuntimeShutdown}!*Executor {
     if (rt.shutting_down.load(.acquire)) {
         return error.RuntimeShutdown;
@@ -223,7 +233,9 @@ pub const Executor = struct {
     id: u8,
     loop: ev.Loop,
 
-    ready_queue: SimpleQueue(WaitNode) = .{},
+    // One ready queue per priority level (indexed by @intFromEnum(Priority)).
+    // getNextTask serves higher indices (higher priority) first.
+    ready_queues: [Priority.count]SimpleQueue(WaitNode) = .{ .{}, .{} },
 
     // Tracks tasks run since last event loop tick.
     // After EVENT_INTERVAL tasks, getNextTask() returns null to force I/O processing.
@@ -234,7 +246,7 @@ pub const Executor = struct {
     // Starts at 1 so new tasks (last_run_tick=0) can run immediately.
     current_tick: u32 = 1,
 
-    // Tracks tasks waiting in ready_queue + next_ready_queue.
+    // Tracks tasks waiting in any of ready_queues + next_ready_queue_remote.
     ready_count: u32 = 0,
 
     // Timestamp of last event loop tick, used for time-based yield decisions.
@@ -376,16 +388,18 @@ pub const Executor = struct {
                 @panic("event loop stopped while the main task was yielding");
             }
 
-            // Drain remote ready queue (cross-thread tasks) after processing current queue
+            // Drain remote ready queue (cross-thread tasks) after processing current queue.
+            // Dispatch each task to the local queue matching its priority.
             var drained = self.next_ready_queue_remote.popAll();
-            while (drained.pop()) |task| {
-                self.ready_queue.push(task);
+            while (drained.pop()) |node| {
+                const task = AnyTask.fromWaitNode(node);
+                self.ready_queues[@intFromEnum(task.priority)].push(node);
                 self.ready_count += 1;
             }
 
             // Run event loop - non-blocking if there's work, otherwise wait for I/O
             const main_ready = check_ready and self.main_task.state.load(.acquire).tag == .ready;
-            const has_work = self.ready_queue.head != null or main_ready;
+            const has_work = self.hasReadyTask() or main_ready;
             try self.loop.run(if (has_work) .no_wait else .once);
 
             // Reset task counter and update tick time after event loop tick
@@ -400,10 +414,12 @@ pub const Executor = struct {
         }
     }
 
-    /// Get the next task to run from the ready queue.
+    /// Get the next task to run from the ready queues.
     ///
-    /// Returns null if no tasks are available, or if EVENT_INTERVAL tasks have
-    /// been run since the last event loop tick (to ensure I/O responsiveness).
+    /// Higher-priority queues are drained first. Within a priority level, FIFO.
+    /// Returns null if no task is available, or if EVENT_INTERVAL tasks have
+    /// been run since the last event loop tick (to ensure I/O responsiveness),
+    /// or if every non-empty queue's head already ran this tick.
     fn getNextTask(self: *Executor) ?*AnyTask {
         // Maximum tasks to run before forcing an event loop tick (from Go's scheduler)
         const EVENT_INTERVAL = 61;
@@ -413,24 +429,41 @@ pub const Executor = struct {
             return null;
         }
 
-        // Peek at head of ready_queue
-        const node = self.ready_queue.head orelse return null;
+        // Serve higher priorities first. Walk from highest enum index down.
+        var i: usize = Priority.count;
+        while (i > 0) {
+            i -= 1;
+            if (self.popReady(&self.ready_queues[i])) |task| return task;
+        }
+        return null;
+    }
+
+    /// Try to pop the head of one ready queue. Returns null if the queue is empty,
+    /// or if its head already ran this tick (to avoid running the same task twice
+    /// per tick — caller should advance the tick and retry).
+    fn popReady(self: *Executor, queue: *SimpleQueue(WaitNode)) ?*AnyTask {
+        const node = queue.head orelse return null;
         const task = AnyTask.fromWaitNode(node);
 
-        // Task already ran this tick? Force event loop tick first.
-        // This prevents a yielding task from running multiple times per tick.
-        // We leave the task in the queue (don't pop) to preserve FIFO order.
+        // Task already ran this tick? Leave it in place — the outer run loop
+        // will advance the tick and we'll pick it up on the next pass.
         if (task.last_run_tick == self.current_tick) {
             return null;
         }
 
-        // Actually remove from queue now that we're going to run it
-        _ = self.ready_queue.pop();
-
+        _ = queue.pop();
         task.last_run_tick = self.current_tick;
         self.tick_task_count += 1;
         self.ready_count -= 1;
         return task;
+    }
+
+    /// True if any priority queue has at least one queued task.
+    fn hasReadyTask(self: *const Executor) bool {
+        for (&self.ready_queues) |*q| {
+            if (q.head != null) return true;
+        }
+        return false;
     }
 
     /// Schedule a task to the current executor's local queue.
@@ -443,7 +476,7 @@ pub const Executor = struct {
         if (std.debug.runtime_safety) {
             std.debug.assert(!wait_node.in_list);
         }
-        self.ready_queue.push(wait_node);
+        self.ready_queues[@intFromEnum(task.priority)].push(wait_node);
         self.ready_count += 1;
     }
 
@@ -823,6 +856,7 @@ pub const Runtime = struct {
         const task = try spawnTask(
             self,
             null,
+            .normal,
             @sizeOf(Result),
             .fromByteUnits(@alignOf(Result)),
             std.mem.asBytes(&args),
@@ -843,9 +877,11 @@ pub const Runtime = struct {
         return self.executors.items.len;
     }
 
-    /// Options for spawnWith. Future fields (priority, deadline, name, etc.)
-    /// extend this struct without growing the spawn API surface.
+    /// Options for spawnWith. Future fields (deadline, name, affinity hint,
+    /// etc.) extend this struct without growing the spawn API surface.
     pub const SpawnOptions = struct {
+        /// Scheduling priority within the home executor's ready queues.
+        priority: Priority = .normal,
         /// Home executor index. Null means use the runtime's round-robin policy.
         /// Must be < runtime.executorCount() if set; otherwise spawnWith returns
         /// error.ExecutorIndexOutOfRange.
@@ -882,6 +918,7 @@ pub const Runtime = struct {
         const task = try spawnTask(
             self,
             home,
+            opts.priority,
             @sizeOf(Result),
             .fromByteUnits(@alignOf(Result)),
             std.mem.asBytes(&args),
@@ -1267,6 +1304,116 @@ test "runtime: spawnWith rejects out-of-range executor index" {
         error.ExecutorIndexOutOfRange,
         runtime.spawnWith(.{ .executor = 2 }, noop, .{}),
     );
+}
+
+test "runtime: spawnWith executor and priority together" {
+    const runtime = try Runtime.init(std.testing.allocator, .{ .executors = .exact(2) });
+    defer runtime.deinit();
+
+    const State = struct {
+        gate_open: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+        order: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
+        high_order: u32 = 0,
+        high_executor_id: u8 = 0,
+        normal_orders: [4]u32 = .{ 0, 0, 0, 0 },
+        normal_executor_ids: [4]u8 = .{ 0, 0, 0, 0 },
+    };
+    var state: State = .{};
+
+    const TestFn = struct {
+        // Holds the pinned executor hostage until the main thread has finished
+        // queuing every priority-bearing task. Busy-wait is deliberate: a
+        // parking wait would release the executor to drain the queue eagerly,
+        // and we want all 5 tasks present when getNextTask makes its choice.
+        fn gateTask(s: *State) void {
+            while (!s.gate_open.load(.acquire)) {
+                std.atomic.spinLoopHint();
+            }
+        }
+        fn normalTask(s: *State, order_slot: *u32, id_slot: *u8) void {
+            id_slot.* = getCurrentExecutor().id;
+            order_slot.* = s.order.fetchAdd(1, .monotonic) + 1;
+        }
+        fn highTask(s: *State) void {
+            s.high_executor_id = getCurrentExecutor().id;
+            s.high_order = s.order.fetchAdd(1, .monotonic) + 1;
+        }
+    };
+
+    const pinned_exec: usize = 1;
+
+    // Pin the gate to executor 1 so the worker is busy while we queue the rest.
+    var gate = try runtime.spawnWith(.{ .executor = pinned_exec }, TestFn.gateTask, .{&state});
+
+    var normals: [4]JoinHandle(void) = undefined;
+    for (&normals, &state.normal_orders, &state.normal_executor_ids) |*h, *order_slot, *id_slot| {
+        h.* = try runtime.spawnWith(
+            .{ .executor = pinned_exec },
+            TestFn.normalTask,
+            .{ &state, order_slot, id_slot },
+        );
+    }
+    var high = try runtime.spawnWith(
+        .{ .executor = pinned_exec, .priority = .high },
+        TestFn.highTask,
+        .{&state},
+    );
+
+    // All 5 priority-bearing tasks are now in executor 1's remote queue;
+    // release the gate so it can drain them in priority order.
+    state.gate_open.store(true, .release);
+
+    gate.join();
+    high.join();
+    for (&normals) |*h| h.join();
+
+    // All 5 priority-bearing tasks must have landed on the pinned executor.
+    try std.testing.expectEqual(@as(u8, pinned_exec), state.high_executor_id);
+    for (state.normal_executor_ids) |id| {
+        try std.testing.expectEqual(@as(u8, pinned_exec), id);
+    }
+    // High must have been served first among the 5 (the gate doesn't touch order).
+    try std.testing.expectEqual(@as(u32, 1), state.high_order);
+    for (state.normal_orders) |o| {
+        try std.testing.expect(o > state.high_order);
+    }
+}
+
+test "runtime: spawnWith priority high runs before queued normals" {
+    const runtime = try Runtime.init(std.testing.allocator, .{ .executors = .exact(1) });
+    defer runtime.deinit();
+
+    const State = struct {
+        order: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
+        high_order: u32 = 0,
+        normal_orders: [4]u32 = .{ 0, 0, 0, 0 },
+    };
+    var state: State = .{};
+
+    const TestFn = struct {
+        fn normalTask(s: *State, slot: *u32) void {
+            slot.* = s.order.fetchAdd(1, .monotonic) + 1;
+        }
+        fn highTask(s: *State) void {
+            s.high_order = s.order.fetchAdd(1, .monotonic) + 1;
+        }
+    };
+
+    // Spawn the normals first so they're all queued before the high task arrives.
+    var normals: [4]JoinHandle(void) = undefined;
+    for (&normals, &state.normal_orders) |*h, *slot| {
+        h.* = try runtime.spawn(TestFn.normalTask, .{ &state, slot });
+    }
+    var high = try runtime.spawnWith(.{ .priority = .high }, TestFn.highTask, .{&state});
+
+    high.join();
+    for (&normals) |*h| h.join();
+
+    // High must have been the first task served on its executor.
+    try std.testing.expectEqual(@as(u32, 1), state.high_order);
+    for (state.normal_orders) |o| {
+        try std.testing.expect(o > state.high_order);
+    }
 }
 
 test "Runtime: multi-threaded with task migration" {
