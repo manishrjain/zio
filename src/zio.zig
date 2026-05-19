@@ -7,6 +7,7 @@ const builtin = @import("builtin");
 const runtime = @import("runtime.zig");
 pub const Runtime = runtime.Runtime;
 pub const JoinHandle = runtime.JoinHandle;
+pub const Priority = runtime.Priority;
 
 // Standalone task functions
 pub const spawn = runtime.spawn;

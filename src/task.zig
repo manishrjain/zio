@@ -7,6 +7,7 @@ const ev = @import("ev/root.zig");
 
 const Runtime = @import("runtime.zig").Runtime;
 const Executor = @import("runtime.zig").Executor;
+const Priority = @import("runtime.zig").Priority;
 const Awaitable = @import("awaitable.zig").Awaitable;
 const Coroutine = @import("coro/coroutines.zig").Coroutine;
 const WaitNode = @import("utils/wait_queue.zig").WaitNode;
@@ -165,6 +166,10 @@ pub const AnyTask = struct {
     // Used to prevent running the same task more than once per event loop tick.
     // Reset to 0 when stolen, allowing immediate execution on the thief.
     last_run_tick: u32 = 0,
+
+    // Scheduling priority. Set at creation, never changes.
+    // Higher-priority tasks run before lower-priority ones on the same executor.
+    priority: Priority = .normal,
 
     // Runtime this task belongs to (set at creation, never changes)
     runtime: *Runtime,
@@ -476,6 +481,7 @@ pub const AnyTask = struct {
         context: []const u8,
         context_alignment: std.mem.Alignment,
         start: Closure.Start,
+        opts: Runtime.SpawnOptions,
     ) !*AnyTask {
         // Allocate task with closure
         const alloc_result = try Closure.alloc(
@@ -499,6 +505,7 @@ pub const AnyTask = struct {
             .coro = .{
                 .parent_context_ptr = &executor.main_task.coro.context,
             },
+            .priority = opts.priority,
             .runtime = executor.runtime,
             .closure = alloc_result.closure,
         };
@@ -567,8 +574,12 @@ pub fn spawnTask(
     context_alignment: std.mem.Alignment,
     start: Closure.Start,
     group: ?*Group,
+    opts: Runtime.SpawnOptions,
 ) !*AnyTask {
-    const executor = try getNextExecutor(rt);
+    const executor = if (opts.executor) |idx| blk: {
+        if (idx >= rt.executors.items.len) return error.ExecutorIndexOutOfRange;
+        break :blk rt.executors.items[idx];
+    } else try getNextExecutor(rt);
 
     const task = try AnyTask.create(
         executor,
@@ -577,6 +588,7 @@ pub fn spawnTask(
         context,
         context_alignment,
         start,
+        opts,
     );
     errdefer task.destroy();
 
