@@ -737,6 +737,14 @@ pub const Runtime = struct {
     task_count: std.atomic.Value(u32) = std.atomic.Value(u32).init(0), // Active task counter
     shutting_down: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
 
+    // List of live AnyTask fibers (excludes main_task and blocking tasks).
+    // Used by stats() / dumpFibers() for diagnostics. Maintained via
+    // swap-remove on finish; each task stores its slot index in
+    // task.fibers_index. Manipulated by registerTask / finishTask under
+    // fibers_mutex.
+    fibers: std.ArrayList(*AnyTask) = .empty,
+    fibers_mutex: os.Mutex = .init(),
+
     const Worker = struct {
         thread: std.Thread = undefined,
         ready: os.ResetEvent = .init(),
@@ -833,6 +841,10 @@ pub const Runtime = struct {
 
         self.executors.deinit(allocator);
 
+        // Fiber list must be empty by now (task_count == 0 asserted above).
+        std.debug.assert(self.fibers.items.len == 0);
+        self.fibers.deinit(allocator);
+
         // Clean up ThreadPool after executors
         self.thread_pool.deinit();
 
@@ -882,6 +894,78 @@ pub const Runtime = struct {
         return self.executors.items.len;
     }
 
+    /// Snapshot of fiber counters at a point in time. `total` and `ready` are
+    /// observed slightly racy across executors but converge under steady state.
+    /// `blocked` is computed as `total - ready` (so it includes pure-running
+    /// fibers that are momentarily off-queue; in practice that population is
+    /// at most one per executor).
+    pub const Stats = struct {
+        total: u32,
+        ready: u32,
+        blocked: u32,
+    };
+
+    /// Return a snapshot of fiber counters.
+    /// Excludes blocking tasks (those scheduled via spawnBlocking).
+    pub fn stats(self: *Runtime) Stats {
+        // total = registered AnyTask count (rt.task_count also includes
+        // blocking tasks, so we read the fiber list length under the mutex).
+        self.fibers_mutex.lock();
+        const total: u32 = @intCast(self.fibers.items.len);
+        self.fibers_mutex.unlock();
+
+        // ready = sum of per-executor ready_count. ready_count is mutated by
+        // its owning executor thread without atomics; use a relaxed atomic
+        // load for portability. Tearing is benign for a diagnostic snapshot.
+        var ready: u32 = 0;
+        for (self.executors.items) |exec| {
+            ready += @atomicLoad(u32, &exec.ready_count, .monotonic);
+        }
+
+        const blocked = if (total > ready) total - ready else 0;
+        return .{ .total = total, .ready = ready, .blocked = blocked };
+    }
+
+    /// Dump per-fiber diagnostic info to `w`. One line per fiber, plus one
+    /// line of resolved park-site source location for parked fibers when
+    /// debug info is available:
+    ///   fiber=<ptr> state=<tag> spawned=<file>:<line>
+    ///     parked: <file>:<line>: 0x<addr> in <fn> (<module>)
+    /// Acquires fibers_mutex for the duration of the dump.
+    pub fn dumpFibers(self: *Runtime, w: *std.Io.Writer) std.Io.Writer.Error!void {
+        self.fibers_mutex.lock();
+        defer self.fibers_mutex.unlock();
+
+        for (self.fibers.items) |t| {
+            const tag = t.state.load(.acquire).tag;
+            const tag_name: []const u8 = switch (tag) {
+                .new => "new",
+                .ready => "ready",
+                .waiting => "waiting",
+                .finished => "finished",
+            };
+            try w.print("fiber=0x{x} state={s}", .{ @intFromPtr(t), tag_name });
+            if (!t.spawn_loc.isUnknown()) {
+                try w.print(" spawned={s}:{d}", .{ t.spawn_loc.file, t.spawn_loc.line });
+            }
+            try w.writeByte('\n');
+            const trace_len = std.mem.indexOfScalar(usize, &t.park_trace, 0) orelse t.park_trace.len;
+            if (trace_len > 0) {
+                try w.writeAll("  parked:\n");
+                const st: std.debug.StackTrace = .{
+                    .return_addresses = t.park_trace[0..trace_len],
+                    .skipped = .none,
+                };
+                // writeStackTrace prints one symbolicated line per address.
+                // On failure (no debug info), fall back to raw hex so callers
+                // always see something.
+                std.debug.writeStackTrace(&st, .{ .writer = w, .mode = .no_color }) catch {
+                    for (t.park_trace[0..trace_len]) |a| try w.print("    0x{x}\n", .{a});
+                };
+            }
+        }
+    }
+
     /// Options for spawnWith. Future fields (deadline, name, affinity hint,
     /// etc.) extend this struct without growing the spawn API surface.
     pub const SpawnOptions = struct {
@@ -891,6 +975,9 @@ pub const Runtime = struct {
         /// Must be < runtime.executorCount() if set; otherwise spawnWith returns
         /// error.ExecutorIndexOutOfRange.
         executor: ?usize = null,
+        /// Optional spawn-site source location for diagnostics. Pass `@src()`
+        /// at the call site to capture file/line for use by dumpFibers().
+        spawn_loc: ?std.builtin.SourceLocation = null,
     };
 
     /// Spawn a task with explicit scheduling options.
@@ -1042,6 +1129,50 @@ pub const Runtime = struct {
         return @import("io.zig").toRuntime(value);
     }
 };
+
+test "runtime: stats and dumpFibers" {
+    const runtime = try Runtime.init(std.testing.allocator, .{});
+    defer runtime.deinit();
+
+    // No fibers yet
+    {
+        const s = runtime.stats();
+        try std.testing.expectEqual(@as(u32, 0), s.total);
+        try std.testing.expectEqual(@as(u32, 0), s.ready);
+        try std.testing.expectEqual(@as(u32, 0), s.blocked);
+    }
+
+    const Body = struct {
+        fn loop() Cancelable!void {
+            // Park forever; cancellation unblocks us.
+            while (true) try mod.sleep(.fromSeconds(60));
+        }
+    };
+
+    var h1 = try runtime.spawnWith(.{ .spawn_loc = @src() }, Body.loop, .{});
+    defer h1.cancel();
+    var h2 = try runtime.spawnWith(.{ .spawn_loc = @src() }, Body.loop, .{});
+    defer h2.cancel();
+
+    // Yield so both fibers reach the park.
+    try mod.sleep(.fromMilliseconds(10));
+
+    {
+        const s = runtime.stats();
+        try std.testing.expectEqual(@as(u32, 2), s.total);
+        try std.testing.expectEqual(@as(u32, 0), s.ready);
+        try std.testing.expectEqual(@as(u32, 2), s.blocked);
+    }
+
+    // Dump should include this file path and a parked source line for each fiber.
+    var buf: [8192]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    try runtime.dumpFibers(&w);
+    const out = w.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, out, "runtime.zig") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "parked:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "state=waiting") != null);
+}
 
 test "runtime: spawnBlocking smoke test" {
     const runtime = try Runtime.init(std.testing.allocator, .{
