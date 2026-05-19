@@ -218,9 +218,9 @@ pub fn getNextExecutor(rt: *Runtime) error{RuntimeShutdown}!*Executor {
 
 // Executor - per-thread execution unit for running coroutines
 pub const Executor = struct {
-    pub const max_executors = 64;
+    pub const max_executors = 255;
 
-    id: u6,
+    id: u8,
     loop: ev.Loop,
 
     ready_queue: SimpleQueue(WaitNode) = .{},
@@ -273,7 +273,7 @@ pub const Executor = struct {
         return @alignCast(@fieldParentPtr("main_task", main_task));
     }
 
-    pub fn init(self: *Executor, runtime: *Runtime, id: u6) !void {
+    pub fn init(self: *Executor, runtime: *Runtime, id: u8) !void {
         self.* = .{
             .id = id,
             .loop = undefined,
@@ -504,11 +504,11 @@ pub const Executor = struct {
             return;
         }
 
-        // Normal scheduling
+        // Normal scheduling. .new tasks always go to their home executor
+        // (chosen by spawnTask, either via round-robin getNextExecutor or an
+        // explicit pin from spawnWith). Re-routing here would override the
+        // caller's placement.
         if (getCurrentExecutorOrNull()) |current_exec| {
-            // TODO: for now, we are forcing .new tasks to be remotely scheduled
-            //       to distribute them across executors, until we have work stealing
-            //       for re-balancing them
             if (current_exec.runtime == task.runtime and old.tag != .new) {
                 const home_exec = Executor.fromCoroutine(&task.coro);
                 if (current_exec == home_exec or task.canMigrate()) {
@@ -521,17 +521,8 @@ pub const Executor = struct {
             }
         }
 
-        // Non-migratable tasks must go home, even when scheduled from a foreign
-        // thread or a different runtime. Only .new tasks get round-robin distribution.
-        if (old.tag != .new and !task.canMigrate()) {
-            Executor.fromCoroutine(&task.coro).scheduleTaskRemote(task);
-            return;
-        }
-
-        // No current executor or different runtime — pick an executor round-robin
-        const executors = task.runtime.executors.items;
-        const index = task.runtime.next_executor_index.fetchAdd(1, .monotonic);
-        executors[index % executors.len].scheduleTaskRemote(task);
+        // No current executor, different runtime, or .new task — go home.
+        Executor.fromCoroutine(&task.coro).scheduleTaskRemote(task);
     }
 
     const TaskCleanup = union(enum) {
@@ -831,6 +822,66 @@ pub const Runtime = struct {
 
         const task = try spawnTask(
             self,
+            null,
+            @sizeOf(Result),
+            .fromByteUnits(@alignOf(Result)),
+            std.mem.asBytes(&args),
+            .fromByteUnits(@alignOf(Args)),
+            .{ .regular = &Wrapper.start },
+            null,
+        );
+
+        return JoinHandle(Result){
+            .awaitable = &task.awaitable,
+            .result = undefined,
+        };
+    }
+
+    /// Number of executors this runtime owns. Indices [0, executorCount()) are
+    /// valid for SpawnOptions.executor.
+    pub fn executorCount(self: *const Runtime) usize {
+        return self.executors.items.len;
+    }
+
+    /// Options for spawnWith. Future fields (priority, deadline, name, etc.)
+    /// extend this struct without growing the spawn API surface.
+    pub const SpawnOptions = struct {
+        /// Home executor index. Null means use the runtime's round-robin policy.
+        /// Must be < runtime.executorCount() if set; otherwise spawnWith returns
+        /// error.ExecutorIndexOutOfRange.
+        executor: ?usize = null,
+    };
+
+    /// Spawn a task with explicit scheduling options.
+    /// Returns error.ExecutorIndexOutOfRange if opts.executor is out of range,
+    /// or error.RuntimeShutdown if the runtime is shutting down.
+    pub fn spawnWith(
+        self: *Runtime,
+        opts: SpawnOptions,
+        func: anytype,
+        args: std.meta.ArgsTuple(@TypeOf(func)),
+    ) !JoinHandle(meta.ReturnType(func)) {
+        if (self.shutting_down.load(.acquire)) return error.RuntimeShutdown;
+
+        const home: ?*Executor = if (opts.executor) |idx| blk: {
+            if (idx >= self.executors.items.len) return error.ExecutorIndexOutOfRange;
+            break :blk self.executors.items[idx];
+        } else null;
+
+        const Result = meta.ReturnType(func);
+        const Args = @TypeOf(args);
+
+        const Wrapper = struct {
+            fn start(ctx: *const anyopaque, result: *anyopaque) void {
+                const a: *const Args = @ptrCast(@alignCast(ctx));
+                const r: *Result = @ptrCast(@alignCast(result));
+                r.* = @call(.auto, func, a.*);
+            }
+        };
+
+        const task = try spawnTask(
+            self,
+            home,
             @sizeOf(Result),
             .fromByteUnits(@alignOf(Result)),
             std.mem.asBytes(&args),
@@ -875,7 +926,7 @@ pub const Runtime = struct {
 
     /// Worker thread entry point. Initializes executor and runs until stopped.
     /// Signals worker.ready after initialization (success or failure).
-    fn runWorker(self: *Runtime, worker: *Worker, id: u6) void {
+    fn runWorker(self: *Runtime, worker: *Worker, id: u8) void {
         worker.executor.init(self, id) catch |e| {
             worker.err = e;
             worker.ready.set();
@@ -1184,6 +1235,40 @@ test "runtime: multi-threaded execution with 64 executors" {
     try std.testing.expectEqual(64, runtime.executors.items.len);
 }
 
+test "runtime: spawnWith pins task to specific executor" {
+    const runtime = try Runtime.init(std.testing.allocator, .{ .executors = .exact(4) });
+    defer runtime.deinit();
+
+    try std.testing.expectEqual(@as(usize, 4), runtime.executorCount());
+
+    const TestFn = struct {
+        fn check(expected_id: u6) !void {
+            if (getCurrentExecutor().id != expected_id) return error.WrongExecutor;
+        }
+    };
+
+    var i: usize = 0;
+    while (i < runtime.executorCount()) : (i += 1) {
+        const expected: u6 = @intCast(i);
+        var handle = try runtime.spawnWith(.{ .executor = i }, TestFn.check, .{expected});
+        try handle.join();
+    }
+}
+
+test "runtime: spawnWith rejects out-of-range executor index" {
+    const runtime = try Runtime.init(std.testing.allocator, .{ .executors = .exact(2) });
+    defer runtime.deinit();
+
+    const noop = struct {
+        fn run() void {}
+    }.run;
+
+    try std.testing.expectError(
+        error.ExecutorIndexOutOfRange,
+        runtime.spawnWith(.{ .executor = 2 }, noop, .{}),
+    );
+}
+
 test "Runtime: multi-threaded with task migration" {
     const runtime = try Runtime.init(std.testing.allocator, .{ .executors = .exact(8) });
     defer runtime.deinit();
@@ -1241,7 +1326,7 @@ test "runtime: wake-before-park awaken bit stress (two executors)" {
     try wakeBeforeParkStress(2);
 }
 
-fn wakeBeforeParkStress(executor_count: u6) !void {
+fn wakeBeforeParkStress(executor_count: u8) !void {
     const ResetEvent = @import("sync/ResetEvent.zig");
 
     const runtime = try Runtime.init(std.testing.allocator, .{

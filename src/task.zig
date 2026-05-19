@@ -558,8 +558,13 @@ pub fn finishTask(rt: *Runtime, awaitable: *Awaitable) void {
 
 /// Spawn a task with raw context bytes and start function.
 /// Used by Runtime.spawn, Group.spawn, and std.Io vtable implementations.
+///
+/// If `home` is non-null, the task is pinned to that executor instead of
+/// being assigned via the runtime's round-robin policy. The caller is
+/// responsible for ensuring `home` belongs to `rt`.
 pub fn spawnTask(
     rt: *Runtime,
+    home: ?*Executor,
     result_len: usize,
     result_alignment: std.mem.Alignment,
     context: []const u8,
@@ -567,7 +572,7 @@ pub fn spawnTask(
     start: Closure.Start,
     group: ?*Group,
 ) !*AnyTask {
-    const executor = try getNextExecutor(rt);
+    const executor = home orelse try getNextExecutor(rt);
 
     const task = try AnyTask.create(
         executor,
