@@ -58,6 +58,7 @@ pub fn build(b: *std.Build) void {
         .{ .name = "ping", .file = "examples/ping.zig" },
         .{ .name = "coro-demo", .file = "examples/coro_demo.zig" },
         .{ .name = "ev-demo", .file = "examples/ev_demo.zig" },
+        .{ .name = "fiber-dump", .file = "examples/fiber_dump.zig" },
     };
 
     // Benchmarks configuration

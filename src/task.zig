@@ -154,6 +154,24 @@ pub const CanceledStatus = packed struct(u32) {
 // Kind of cancellation
 pub const CancelKind = enum { user, auto };
 
+/// Compact source location for fiber diagnostics.
+/// Stores file path + line + column (24 bytes on 64-bit), omitting the
+/// `module` and `fn_name` fields of `std.builtin.SourceLocation` to keep
+/// the per-task overhead small.
+pub const SourceLoc = struct {
+    file: [:0]const u8 = "",
+    line: u32 = 0,
+    column: u32 = 0,
+
+    pub fn from(loc: std.builtin.SourceLocation) SourceLoc {
+        return .{ .file = loc.file, .line = loc.line, .column = loc.column };
+    }
+
+    pub fn isUnknown(self: SourceLoc) bool {
+        return self.line == 0;
+    }
+};
+
 pub const AnyTask = struct {
     awaitable: Awaitable,
     coro: Coroutine,
@@ -176,6 +194,23 @@ pub const AnyTask = struct {
 
     // Closure for the task
     closure: Closure,
+
+    // Source location of the spawn call site (filled when caller passes @src()
+    // via SpawnOptions.spawn_loc). Empty file => unknown.
+    spawn_loc: SourceLoc = .{},
+
+    // Stack trace captured the last time this task entered a .park yield.
+    // The innermost frame (always inside Waiter.waitTask, since that's the
+    // sole caller of yield(.park)) is dropped — it carries no useful signal.
+    // Frame [0] is the zio API that called into the waiter (e.g. Notify.wait
+    // or zio.sleep), and [1]+ are user-code frames. Trailing zeros = unused.
+    park_trace: [8]usize = @splat(0),
+
+    // Index into Runtime.fibers (under fibers_mutex). Maintained by
+    // registerTask / finishTask. Only valid while this task is in the list;
+    // main_task and any AnyTask that didn't go through registerTask leave
+    // this as the sentinel value below.
+    fibers_index: u32 = std.math.maxInt(u32),
 
     /// Task state and park token, packed into a single byte for atomic operations.
     ///
@@ -264,6 +299,21 @@ pub const AnyTask = struct {
                 self.state.store(.{ .tag = .ready }, .release);
                 return err;
             };
+        }
+
+        // Capture the call chain that led to this park, dropping the
+        // innermost frame (always inside Waiter.waitTask since that's the
+        // sole caller of yield(.park)). Passing @returnAddress() as
+        // first_address skips this yield frame so the trace starts at our
+        // caller; we then copy [1..] into the stored trace to also drop the
+        // waitTask frame.
+        if (mode == .park) {
+            var tmp: [self.park_trace.len + 1]usize = @splat(0);
+            _ = std.debug.captureCurrentStackTrace(
+                .{ .first_address = @returnAddress() },
+                &tmp,
+            );
+            self.park_trace = tmp[1..][0..self.park_trace.len].*;
         }
 
         // Set up deferred cleanup — state transition happens after context is saved
@@ -475,12 +525,12 @@ pub const AnyTask = struct {
 
     pub fn create(
         executor: *Executor,
-        priority: Priority,
         result_len: usize,
         result_alignment: std.mem.Alignment,
         context: []const u8,
         context_alignment: std.mem.Alignment,
         start: Closure.Start,
+        opts: Runtime.SpawnOptions,
     ) !*AnyTask {
         // Allocate task with closure
         const alloc_result = try Closure.alloc(
@@ -504,9 +554,10 @@ pub const AnyTask = struct {
             .coro = .{
                 .parent_context_ptr = &executor.main_task.coro.context,
             },
-            .priority = priority,
+            .priority = opts.priority,
             .runtime = executor.runtime,
             .closure = alloc_result.closure,
+            .spawn_loc = if (opts.spawn_loc) |loc| .from(loc) else .{},
         };
 
         // Acquire stack from pool and initialize context
@@ -529,13 +580,25 @@ const getNextExecutor = @import("runtime.zig").getNextExecutor;
 /// Increments its reference count, adds the task to the runtime's task list,
 /// and schedules it on its executor.
 /// Returns error.RuntimeShutdown if the runtime is shutting down.
-pub fn registerTask(rt: *Runtime, task: *AnyTask) error{RuntimeShutdown}!void {
+pub fn registerTask(rt: *Runtime, task: *AnyTask) error{ RuntimeShutdown, OutOfMemory }!void {
     // Check if runtime is shutting down before incrementing counter
     if (rt.shutting_down.load(.acquire)) {
         return error.RuntimeShutdown;
     }
 
     _ = rt.task_count.fetchAdd(1, .acq_rel);
+
+    // Push into the runtime's global fiber list for enumeration (dumpFibers).
+    // The list uses swap-remove on finish, so we stash the slot index on the
+    // task itself for O(1) removal later. Append may grow + fail with OOM.
+    rt.fibers_mutex.lock();
+    rt.fibers.append(rt.allocator, task) catch |err| {
+        rt.fibers_mutex.unlock();
+        _ = rt.task_count.fetchSub(1, .acq_rel);
+        return err;
+    };
+    task.fibers_index = @intCast(rt.fibers.items.len - 1);
+    rt.fibers_mutex.unlock();
 
     Executor.scheduleTask(task);
 
@@ -550,6 +613,24 @@ pub fn finishTask(rt: *Runtime, awaitable: *Awaitable) void {
     // Decrement task count BEFORE marking complete to prevent race where
     // waiting thread wakes up and sees non-zero task_count in deinit()
     _ = rt.task_count.fetchSub(1, .acq_rel);
+
+    // Remove from the runtime's global fiber list via swap-remove. Only
+    // AnyTask (kind == .task) tasks are in this list; blocking tasks share
+    // finishTask but never get added (their fibers_index stays at sentinel).
+    if (awaitable.kind == .task) {
+        const task = AnyTask.fromAwaitable(awaitable);
+        rt.fibers_mutex.lock();
+        const idx = task.fibers_index;
+        const last = rt.fibers.items.len - 1;
+        if (idx != last) {
+            const moved = rt.fibers.items[last];
+            rt.fibers.items[idx] = moved;
+            moved.fibers_index = idx;
+        }
+        rt.fibers.items.len = last;
+        task.fibers_index = std.math.maxInt(u32);
+        rt.fibers_mutex.unlock();
+    }
 
     // Mark awaitable as complete and wake all waiters
     awaitable.markComplete();
@@ -571,25 +652,27 @@ pub fn finishTask(rt: *Runtime, awaitable: *Awaitable) void {
 /// responsible for ensuring `home` belongs to `rt`.
 pub fn spawnTask(
     rt: *Runtime,
-    home: ?*Executor,
-    priority: Priority,
     result_len: usize,
     result_alignment: std.mem.Alignment,
     context: []const u8,
     context_alignment: std.mem.Alignment,
     start: Closure.Start,
     group: ?*Group,
+    opts: Runtime.SpawnOptions,
 ) !*AnyTask {
-    const executor = home orelse try getNextExecutor(rt);
+    const executor = if (opts.executor) |idx| blk: {
+        if (idx >= rt.executors.items.len) return error.ExecutorIndexOutOfRange;
+        break :blk rt.executors.items[idx];
+    } else try getNextExecutor(rt);
 
     const task = try AnyTask.create(
         executor,
-        priority,
         result_len,
         result_alignment,
         context,
         context_alignment,
         start,
+        opts,
     );
     errdefer task.destroy();
 

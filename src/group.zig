@@ -228,7 +228,7 @@ pub fn groupSpawnTask(
     context_alignment: std.mem.Alignment,
     start: *const fn (context: *const anyopaque) void,
 ) !void {
-    _ = try spawnTask(rt, null, .normal, 0, .@"1", context, context_alignment, .{ .group = start }, group);
+    _ = try spawnTask(rt, 0, .@"1", context, context_alignment, .{ .group = start }, group, .{});
 }
 
 /// Spawn a blocking task in the group with raw context bytes and start function.
